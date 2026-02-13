@@ -5,22 +5,17 @@ from alembic import context
 import sys
 from pathlib import Path
 
-# Garante que a raiz do projeto esteja no PYTHONPATH
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-# Importa a config do projeto
 from app.core.config import DATABASE_URL
 from app.db.base import Base
+from app.models import user 
 
-
-# Alembic Config object
 config = context.config
 
-# Configuração de logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Metadata do SQLAlchemy
 target_metadata = Base.metadata
 
 
