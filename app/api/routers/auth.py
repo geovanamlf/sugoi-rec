@@ -1,18 +1,27 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from app.api.deps_auth import get_current_user
 
 from app.api.deps import get_db
 from app.models.user import User
-from app.schemas.user import UserCreate, UserLogin, UserResponse
-from app.core.security import hash_password, verify_password
+from app.schemas.user import UserCreate, UserResponse
+from app.core.security import (
+    hash_password,
+    verify_password,
+    create_access_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=UserResponse)
 def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.scalar(select(User).where(User.email == user_data.email))
+    existing_user = db.scalar(
+        select(User).where(User.email == user_data.email)
+    )
+
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -28,7 +37,10 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    new_user = User(email=user_data.email, password_hash=password_hash)
+    new_user = User(
+        email=user_data.email,
+        password_hash=password_hash,
+    )
 
     db.add(new_user)
     db.commit()
@@ -37,27 +49,28 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     return new_user
 
 
-@router.post("/login", response_model=UserResponse)
-def login(login_data: UserLogin, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == login_data.email))
+@router.post("/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(
+        select(User).where(User.email == form_data.username)
+    )
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    pwd_bytes = login_data.password.encode("utf-8")
-    if len(pwd_bytes) > 72:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Password too long for bcrypt ({len(pwd_bytes)} bytes). Max is 72 bytes."
-        )
+    if not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not verify_password(login_data.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-        )
+    access_token = create_access_token(subject=str(user.id))
 
-    return user
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+    }
+
+@router.get("/me", response_model=UserResponse)
+def me(current_user: User = Depends(get_current_user)):
+    return current_user
