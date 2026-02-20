@@ -7,6 +7,7 @@ from app.api.deps_auth import get_current_user
 from app.api.deps import get_db
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse
+from app.schemas.token import TokenResponse
 from app.core.security import (
     hash_password,
     verify_password,
@@ -25,13 +26,6 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    pwd_bytes = user_data.password.encode("utf-8")
-    if len(pwd_bytes) > 72:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Password too long for bcrypt ({len(pwd_bytes)} bytes). Max is 72 bytes."
-        )
-
     try:
         password_hash = hash_password(user_data.password)
     except ValueError as e:
@@ -49,7 +43,7 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     return new_user
 
 
-@router.post("/login")
+@router.post("/login", response_model=TokenResponse)
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
@@ -66,10 +60,7 @@ def login(
 
     access_token = create_access_token(subject=str(user.id))
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-    }
+    return TokenResponse(access_token=access_token, token_type="bearer")
 
 @router.get("/me", response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)):
