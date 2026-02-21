@@ -9,7 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import DATABASE_URL
 from app.db.base import Base
-from app.models import user 
+from app.models import user, anime
 
 config = context.config
 
