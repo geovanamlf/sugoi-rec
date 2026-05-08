@@ -23,7 +23,7 @@ def add_anime(
         raise HTTPException(status_code=400, detail="Anime already in list.")
 
 
-@router.get("/", response_model=list[UserAnimeResponse])
+@router.get("/")
 def list_anime(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

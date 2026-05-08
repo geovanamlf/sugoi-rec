@@ -27,7 +27,7 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
-      <div className="pixel-box w-full max-w-sm">
+      <div className="pixel-box w-full" style={{ maxWidth: "400px" }}>
         <h1 className="pixel-title text-center mb-1">SUGOI REC</h1>
         <p className="text-center text-sm mb-8" style={{ color: "#c9a87c" }}>entre na sua conta</p>
 

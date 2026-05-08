@@ -1,5 +1,4 @@
 from datetime import datetime
-
 from pydantic import BaseModel
 
 
@@ -17,8 +16,6 @@ class AnimeBase(BaseModel):
 
 
 class AnimeCreate(AnimeBase):
-    # Used internally when saving AniList data to the cache table.
-    # cached_at is set by the service, not by the user.
     cached_at: datetime
 
 

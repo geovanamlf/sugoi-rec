@@ -16,7 +16,6 @@ class UserAnimeNotFoundError(Exception):
 def add_anime(user_id: int, data: UserAnimeCreate, db: Session) -> UserAnime:
     repo = UserAnimeRepository(db)
 
-    # Verifica se o usuário já tem esse anime na lista
     existing = repo.get_by_user_and_anime(user_id, data.anime_id)
     if existing:
         raise UserAnimeAlreadyExistsError("Anime already in list.")
@@ -39,7 +38,6 @@ def update_anime(user_id: int, anime_id: int, data: UserAnimeUpdate, db: Session
     if not entry:
         raise UserAnimeNotFoundError("Anime not found in list.")
 
-    # Atualiza só os campos que foram enviados
     if data.status is not None:
         entry.status = data.status
     if data.rating is not None:
@@ -50,7 +48,7 @@ def update_anime(user_id: int, anime_id: int, data: UserAnimeUpdate, db: Session
     return repo.save(entry)
 
 
-def list_anime(user_id: int, db: Session) -> list[UserAnime]:
+def list_anime(user_id: int, db: Session) -> list[dict]:
     repo = UserAnimeRepository(db)
     return repo.get_all_by_user(user_id)
 
