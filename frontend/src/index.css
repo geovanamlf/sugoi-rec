@@ -107,3 +107,13 @@ body {
   padding-bottom: 8px;
   margin-bottom: 16px;
 }
+/* Status count badge no header */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 13px;
+  padding: 2px 8px;
+  border: 2px solid currentColor;
+  background: #1a1a2e;
+}

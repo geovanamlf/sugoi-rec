@@ -5,8 +5,8 @@ import Register from "./pages/Register"
 import Dashboard from "./pages/Dashboard"
 import Search from "./pages/Search"
 import Recommendations from "./pages/Recommendations"
+import AnimeDetail from "./pages/AnimeDetail"
 
-// Rota protegida — redireciona pro login se não tiver token
 function PrivateRoute({ children }) {
   const { token } = useAuth()
   return token ? children : <Navigate to="/login" />
@@ -20,6 +20,7 @@ function AppRoutes() {
       <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
       <Route path="/search" element={<PrivateRoute><Search /></PrivateRoute>} />
       <Route path="/recommendations" element={<PrivateRoute><Recommendations /></PrivateRoute>} />
+      <Route path="/anime/:animeId" element={<PrivateRoute><AnimeDetail /></PrivateRoute>} />
       <Route path="*" element={<Navigate to="/login" />} />
     </Routes>
   )
