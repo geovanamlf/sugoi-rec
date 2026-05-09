@@ -5,7 +5,7 @@ import api from "../api/client"
 export default function Recommendations() {
   const [recs, setRecs] = useState([])
   const [loading, setLoading] = useState(true)
-  const [adding, setAdding] = useState(null) // anime sendo adicionado
+  const [adding, setAdding] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -40,7 +40,12 @@ export default function Recommendations() {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem" }}>
           {recs.map((anime) => (
-            <div key={anime.anilist_id} className="pixel-box" style={{ padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            <div
+              key={anime.anilist_id}
+              className="pixel-box"
+              style={{ padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", cursor: "pointer" }}
+              onClick={() => navigate(`/anime/${anime.anilist_id}`)}
+            >
               {anime.cover_image_url && (
                 <img
                   src={anime.cover_image_url}
@@ -60,7 +65,7 @@ export default function Recommendations() {
               <button
                 className="pixel-btn"
                 style={{ fontSize: "13px", padding: "6px", marginTop: "auto" }}
-                onClick={() => setAdding(anime)}
+                onClick={(e) => { e.stopPropagation(); setAdding(anime) }}
               >
                 + ADICIONAR
               </button>
@@ -90,7 +95,6 @@ function AddModal({ anime, onClose }) {
   async function handleAdd() {
     setError(null)
     try {
-      // Primeiro busca o anime pelo anilist_id pra pegar o id interno do banco
       const res = await api.get(`/anime/id/${anime.anilist_id}`)
       const animeData = res.data
 
