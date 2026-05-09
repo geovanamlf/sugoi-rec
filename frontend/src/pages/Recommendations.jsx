@@ -1,26 +1,59 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useMemo } from "react"
 import { useNavigate } from "react-router-dom"
 import api from "../api/client"
 
 export default function Recommendations() {
   const [recs, setRecs] = useState([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [adding, setAdding] = useState(null)
+  const [activeGenre, setActiveGenre] = useState("TODOS")
   const navigate = useNavigate()
 
-  useEffect(() => {
-    api.get("/recommendations/")
+  function loadRecs(refresh = false) {
+    if (refresh) setRefreshing(true)
+    else setLoading(true)
+
+    api.get(`/recommendations/?refresh=${refresh}`)
       .then((res) => setRecs(res.data))
-      .finally(() => setLoading(false))
+      .catch(() => {})
+      .finally(() => {
+        setLoading(false)
+        setRefreshing(false)
+      })
+  }
+
+  useEffect(() => {
+    loadRecs()
   }, [])
+
+  const allGenres = useMemo(() => {
+    const genres = new Set()
+    recs.forEach((anime) => anime.genres?.forEach((g) => genres.add(g)))
+    return ["TODOS", ...Array.from(genres).sort()]
+  }, [recs])
+
+  const filtered = activeGenre === "TODOS"
+    ? recs
+    : recs.filter((anime) => anime.genres?.includes(activeGenre))
 
   return (
     <div className="min-h-screen">
       <div className="page-container">
 
-        <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "2rem" }}>
-          <button className="pixel-btn" onClick={() => navigate("/dashboard")}>« VOLTAR</button>
-          <h1 className="pixel-title" style={{ fontSize: "36px" }}>RECOMENDAÇÕES</h1>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "1rem", marginBottom: "2rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+            <button className="pixel-btn" onClick={() => navigate("/dashboard")}>« VOLTAR</button>
+            <h1 className="pixel-title" style={{ fontSize: "36px" }}>RECOMENDAÇÕES</h1>
+          </div>
+          <button
+            className="pixel-btn"
+            style={{ fontSize: "13px", opacity: refreshing ? 0.6 : 1 }}
+            onClick={() => loadRecs(true)}
+            disabled={refreshing}
+          >
+            {refreshing ? "⌛ atualizando..." : "↺ atualizar"}
+          </button>
         </div>
 
         {loading && (
@@ -38,40 +71,69 @@ export default function Recommendations() {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem" }}>
-          {recs.map((anime) => (
-            <div
-              key={anime.anilist_id}
-              className="pixel-box"
-              style={{ padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", cursor: "pointer" }}
-              onClick={() => navigate(`/anime/${anime.anilist_id}`)}
-            >
-              {anime.cover_image_url && (
-                <img
-                  src={anime.cover_image_url}
-                  alt={anime.title_romaji}
-                  style={{ width: "100%", height: "180px", objectFit: "cover", border: "3px solid #e8d5b7" }}
-                />
-              )}
-              <h2 className="font-pixel" style={{ fontSize: "14px", color: "#a8c5a0", lineHeight: "1.4" }}>
-                {anime.title_english || anime.title_romaji}
-              </h2>
-              <p style={{ fontSize: "12px", color: "#c9a87c" }}>
-                {anime.episodes ? `${anime.episodes} eps` : "eps: —"}
-              </p>
-              <p style={{ fontSize: "12px", color: "#a8a8c0" }}>
-                {anime.genres?.join(" · ")}
-              </p>
-              <button
-                className="pixel-btn"
-                style={{ fontSize: "13px", padding: "6px", marginTop: "auto" }}
-                onClick={(e) => { e.stopPropagation(); setAdding(anime) }}
-              >
-                + ADICIONAR
-              </button>
+        {!loading && recs.length > 0 && (
+          <>
+            <div className="pixel-box" style={{ marginBottom: "1.5rem" }}>
+              <h2 className="pixel-subtitle">🎭 filtrar por gênero</h2>
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                {allGenres.map((genre) => (
+                  <button
+                    key={genre}
+                    className="pixel-btn"
+                    style={{
+                      fontSize: "12px",
+                      padding: "4px 10px",
+                      backgroundColor: activeGenre === genre ? "#5a3e7a" : undefined,
+                      borderColor: activeGenre === genre ? "#c9a8f0" : undefined,
+                    }}
+                    onClick={() => setActiveGenre(genre)}
+                  >
+                    {genre}
+                  </button>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+
+            <p style={{ fontSize: "13px", color: "#a8a8c0", marginBottom: "1rem" }}>
+              mostrando <span style={{ color: "#a8c5a0", fontWeight: 700 }}>{filtered.length}</span> de {recs.length} recomendações
+            </p>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem" }}>
+              {filtered.map((anime) => (
+                <div
+                  key={anime.anilist_id}
+                  className="pixel-box"
+                  style={{ padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", cursor: "pointer" }}
+                  onClick={() => navigate(`/anime/${anime.anilist_id}`)}
+                >
+                  {anime.cover_image_url && (
+                    <img
+                      src={anime.cover_image_url}
+                      alt={anime.title_romaji}
+                      style={{ width: "100%", height: "180px", objectFit: "cover", border: "3px solid #e8d5b7" }}
+                    />
+                  )}
+                  <h2 className="font-pixel" style={{ fontSize: "14px", color: "#a8c5a0", lineHeight: "1.4" }}>
+                    {anime.title_english || anime.title_romaji}
+                  </h2>
+                  <p style={{ fontSize: "12px", color: "#c9a87c" }}>
+                    {anime.episodes ? `${anime.episodes} eps` : "eps: —"}
+                  </p>
+                  <p style={{ fontSize: "12px", color: "#a8a8c0" }}>
+                    {anime.genres?.join(" · ")}
+                  </p>
+                  <button
+                    className="pixel-btn"
+                    style={{ fontSize: "13px", padding: "6px", marginTop: "auto" }}
+                    onClick={(e) => { e.stopPropagation(); setAdding(anime) }}
+                  >
+                    + ADICIONAR
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
       </div>
 
@@ -97,7 +159,6 @@ function AddModal({ anime, onClose }) {
     try {
       const res = await api.get(`/anime/id/${anime.anilist_id}`)
       const animeData = res.data
-
       await api.post("/list/", {
         anime_id: animeData.id,
         status,

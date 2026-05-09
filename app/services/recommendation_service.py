@@ -3,12 +3,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 import httpx
 import time
+import json
+from datetime import datetime, timezone, timedelta
 
 from app.models.user_anime import UserAnime
 from app.models.anime import Anime
+from app.models.recommendation_cache import RecommendationCache
 from app.core.exceptions import AniListUnavailableError, AniListRateLimitError
 
 ANILIST_URL = "https://graphql.anilist.co"
+CACHE_TTL_HOURS = 6
 
 RECOMMENDATION_BY_GENRE_QUERY = """
 query ($genre: String, $page: Int) {
@@ -60,7 +64,6 @@ def _get_top_genres(user_id: int, db: Session, top_n: int = 3) -> list[str]:
 
 
 def _get_top_tags(user_id: int, db: Session, top_n: int = 3) -> list[str]:
-    # Pega as tags mais frequentes na lista do usuário
     rows = db.execute(
         select(UserAnime, Anime)
         .join(Anime, Anime.id == UserAnime.anime_id)
@@ -98,7 +101,8 @@ def _fetch(query: str, variables: dict) -> list[dict]:
         raise AniListUnavailableError(f"Could not reach AniList: {e}")
 
     if response.status_code == 429:
-        raise AniListRateLimitError("AniList rate limit exceeded.")
+        retry_after = response.headers.get("Retry-After", "60")
+        raise AniListRateLimitError(f"AniList rate limit exceeded. Retry after {retry_after}s.")
 
     if response.status_code != 200:
         raise AniListUnavailableError(f"AniList returned status {response.status_code}.")
@@ -120,7 +124,55 @@ def _parse_media(media: dict) -> dict:
     }
 
 
-def get_recommendations(user_id: int, db: Session) -> list[dict]:
+def _get_cache(user_id: int, db: Session) -> list[dict] | None:
+    cache = db.scalar(
+        select(RecommendationCache).where(RecommendationCache.user_id == user_id)
+    )
+
+    if not cache:
+        return None
+
+    age = datetime.now(timezone.utc) - cache.cached_at.replace(tzinfo=timezone.utc)
+    if age > timedelta(hours=CACHE_TTL_HOURS):
+        return None
+
+    return json.loads(cache.data)
+
+
+def _save_cache(user_id: int, data: list[dict], db: Session) -> None:
+    cache = db.scalar(
+        select(RecommendationCache).where(RecommendationCache.user_id == user_id)
+    )
+
+    if cache:
+        cache.data = json.dumps(data)
+        cache.cached_at = datetime.now(timezone.utc)
+    else:
+        cache = RecommendationCache(
+            user_id=user_id,
+            data=json.dumps(data),
+            cached_at=datetime.now(timezone.utc),
+        )
+        db.add(cache)
+
+    db.commit()
+
+
+def _invalidate_cache(user_id: int, db: Session) -> None:
+    cache = db.scalar(
+        select(RecommendationCache).where(RecommendationCache.user_id == user_id)
+    )
+    if cache:
+        db.delete(cache)
+        db.commit()
+
+
+def get_recommendations(user_id: int, db: Session, force_refresh: bool = False) -> list[dict]:
+    if not force_refresh:
+        cached = _get_cache(user_id, db)
+        if cached is not None:
+            return cached
+
     top_genres = _get_top_genres(user_id, db)
     top_tags = _get_top_tags(user_id, db)
 
@@ -131,7 +183,6 @@ def get_recommendations(user_id: int, db: Session) -> list[dict]:
     seen_ids = set()
     recommendations = []
 
-    # Busca por gênero
     for genre in top_genres:
         results = _fetch(RECOMMENDATION_BY_GENRE_QUERY, {"genre": genre, "page": 1})
         for media in results:
@@ -140,11 +191,8 @@ def get_recommendations(user_id: int, db: Session) -> list[dict]:
                 continue
             seen_ids.add(anilist_id)
             recommendations.append(_parse_media(media))
+        time.sleep(2)
 
-        # Delay entre requisições pra respeitar o burst limiter
-        time.sleep(0.5)
-
-    # Busca por tag
     for tag in top_tags:
         results = _fetch(RECOMMENDATION_BY_TAG_QUERY, {"tag": tag, "page": 1})
         for media in results:
@@ -153,7 +201,8 @@ def get_recommendations(user_id: int, db: Session) -> list[dict]:
                 continue
             seen_ids.add(anilist_id)
             recommendations.append(_parse_media(media))
+        time.sleep(2)
 
-        time.sleep(0.5)
+    _save_cache(user_id, recommendations, db)
 
     return recommendations
