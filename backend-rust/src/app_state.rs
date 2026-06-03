@@ -6,10 +6,15 @@ use crate::config::Config;
 pub struct AppState {
     pub config: Config,
     pub db: PgPool,
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
-    pub fn new(config: Config, db: PgPool) -> Self {
-        Self { config, db }
+    pub fn new(config: Config, db: PgPool, http_client: reqwest::Client) -> Self {
+        Self {
+            config,
+            db,
+            http_client,
+        }
     }
 }

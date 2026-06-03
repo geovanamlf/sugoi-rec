@@ -1,3 +1,4 @@
+pub mod anime;
 pub mod auth;
 pub mod health;
 
@@ -15,6 +16,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .merge(health::routes())
         .merge(auth::routes())
+        .merge(anime::routes())
         .layer(cors)
         .with_state(state)
 }

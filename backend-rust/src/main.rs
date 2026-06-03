@@ -1,4 +1,5 @@
 mod app_state;
+mod clients;
 mod config;
 mod core;
 mod errors;
@@ -34,7 +35,9 @@ async fn main() {
         .await
         .expect("Failed to connect to PostgreSQL database.");
 
-    let state = AppState::new(config, db);
+    let http_client = reqwest::Client::new();
+
+    let state = AppState::new(config, db, http_client);
     let app = create_router(state);
 
     let listener = TcpListener::bind(&address)

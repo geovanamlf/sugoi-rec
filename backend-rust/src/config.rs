@@ -9,6 +9,7 @@ pub struct Config {
     pub database_max_connections: u32,
     pub jwt_secret_key: String,
     pub jwt_access_token_expire_minutes: u64,
+    pub anilist_url: String,
 }
 
 impl Config {
@@ -39,6 +40,9 @@ impl Config {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(30);
 
+        let anilist_url =
+            env::var("ANILIST_URL").unwrap_or_else(|_| "https://graphql.anilist.co".to_string());
+
         Self {
             host,
             port,
@@ -47,6 +51,7 @@ impl Config {
             database_max_connections,
             jwt_secret_key,
             jwt_access_token_expire_minutes,
+            anilist_url,
         }
     }
 
