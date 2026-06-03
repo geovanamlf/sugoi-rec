@@ -1,6 +1,7 @@
 pub mod anime;
 pub mod auth;
 pub mod health;
+pub mod user_anime;
 
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
@@ -17,6 +18,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(health::routes())
         .merge(auth::routes())
         .merge(anime::routes())
+        .merge(user_anime::routes())
         .layer(cors)
         .with_state(state)
 }

@@ -1,0 +1,133 @@
+use chrono::Utc;
+
+use crate::{
+    errors::AppError,
+    repositories::user_anime_repository,
+    schemas::user_anime::{
+        UserAnimeCreate, UserAnimeListItemResponse, UserAnimeResponse, UserAnimeUpdate,
+    },
+};
+
+const VALID_STATUSES: [&str; 4] = ["watching", "completed", "dropped", "planned"];
+
+pub async fn add_anime(
+    db: &sqlx::PgPool,
+    user_id: i32,
+    payload: UserAnimeCreate,
+) -> Result<UserAnimeResponse, AppError> {
+    validate_anime_id(payload.anime_id)?;
+    validate_status(&payload.status)?;
+    validate_rating(payload.rating)?;
+
+    let anime_exists = user_anime_repository::anime_exists(db, payload.anime_id).await?;
+
+    if !anime_exists {
+        return Err(AppError::NotFound("Anime not found.".to_string()));
+    }
+
+    let existing =
+        user_anime_repository::find_by_user_and_anime(db, user_id, payload.anime_id).await?;
+
+    if existing.is_some() {
+        return Err(AppError::BadRequest("Anime already in list.".to_string()));
+    }
+
+    let entry = user_anime_repository::create(
+        db,
+        user_id,
+        payload.anime_id,
+        &payload.status,
+        payload.rating,
+        payload.is_favorite,
+        Utc::now().naive_utc(),
+    )
+    .await?;
+
+    Ok(UserAnimeResponse::from(entry))
+}
+
+pub async fn list_anime(
+    db: &sqlx::PgPool,
+    user_id: i32,
+) -> Result<Vec<UserAnimeListItemResponse>, AppError> {
+    let rows = user_anime_repository::list_by_user(db, user_id).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(UserAnimeListItemResponse::from)
+        .collect())
+}
+
+pub async fn update_anime(
+    db: &sqlx::PgPool,
+    user_id: i32,
+    anime_id: i32,
+    payload: UserAnimeUpdate,
+) -> Result<UserAnimeResponse, AppError> {
+    validate_anime_id(anime_id)?;
+
+    if let Some(status) = payload.status.as_deref() {
+        validate_status(status)?;
+    }
+
+    if let Some(rating) = payload.rating {
+        validate_rating(rating)?;
+    }
+
+    let existing = user_anime_repository::find_by_user_and_anime(db, user_id, anime_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Anime not found in list.".to_string()))?;
+
+    let status = payload.status.unwrap_or(existing.status);
+    let rating = payload.rating.unwrap_or(existing.rating);
+    let is_favorite = payload.is_favorite.unwrap_or(existing.is_favorite);
+
+    let updated =
+        user_anime_repository::update(db, existing.id, &status, rating, is_favorite).await?;
+
+    Ok(UserAnimeResponse::from(updated))
+}
+
+pub async fn remove_anime(db: &sqlx::PgPool, user_id: i32, anime_id: i32) -> Result<(), AppError> {
+    validate_anime_id(anime_id)?;
+
+    let existing = user_anime_repository::find_by_user_and_anime(db, user_id, anime_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Anime not found in list.".to_string()))?;
+
+    user_anime_repository::delete_by_id(db, existing.id).await?;
+
+    Ok(())
+}
+
+fn validate_anime_id(anime_id: i32) -> Result<(), AppError> {
+    if anime_id <= 0 {
+        return Err(AppError::BadRequest(
+            "Anime ID must be a positive integer.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_status(status: &str) -> Result<(), AppError> {
+    if VALID_STATUSES.contains(&status) {
+        return Ok(());
+    }
+
+    Err(AppError::BadRequest(
+        "Status must be one of: watching, completed, dropped, planned.".to_string(),
+    ))
+}
+
+fn validate_rating(rating: Option<i32>) -> Result<(), AppError> {
+    if let Some(value) = rating {
+        if !(1..=10).contains(&value) {
+            return Err(AppError::BadRequest(
+                "Rating must be between 1 and 10.".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
