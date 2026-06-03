@@ -14,6 +14,12 @@ from app.core.exceptions import AniListUnavailableError, AniListRateLimitError
 ANILIST_URL = "https://graphql.anilist.co"
 CACHE_TTL_HOURS = 6
 
+# Threshold mínimo de relevância pra entrar na busca (30%)
+RELEVANCE_THRESHOLD = 0.30
+
+# Máximo de queries pra respeitar o rate limit
+MAX_QUERIES = 8
+
 RECOMMENDATION_BY_GENRE_QUERY = """
 query ($genre: String, $page: Int) {
   Page(page: $page, perPage: 10) {
@@ -47,36 +53,47 @@ query ($tag: String, $page: Int) {
 """
 
 
-def _get_top_genres(user_id: int, db: Session, top_n: int = 3) -> list[str]:
+def _get_relevance_scores(user_id: int, db: Session) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """
+    Retorna listas de (nome, score) ordenadas por relevância
+    para gêneros e tags separadamente.
+    Score = frequência / total de animes na lista
+    """
     rows = db.execute(
         select(UserAnime, Anime)
         .join(Anime, Anime.id == UserAnime.anime_id)
         .where(UserAnime.user_id == user_id)
     ).all()
 
-    counter = Counter()
+    total = len(rows)
+    if total == 0:
+        return [], []
+
+    genre_counter = Counter()
+    tag_counter = Counter()
+
     for _, anime in rows:
         if anime.genres:
             for genre in anime.genres.split(","):
-                counter[genre.strip()] += 1
-
-    return [genre for genre, _ in counter.most_common(top_n)]
-
-
-def _get_top_tags(user_id: int, db: Session, top_n: int = 3) -> list[str]:
-    rows = db.execute(
-        select(UserAnime, Anime)
-        .join(Anime, Anime.id == UserAnime.anime_id)
-        .where(UserAnime.user_id == user_id)
-    ).all()
-
-    counter = Counter()
-    for _, anime in rows:
+                genre_counter[genre.strip()] += 1
         if anime.tags:
             for tag in anime.tags.split(","):
-                counter[tag.strip()] += 1
+                tag_counter[tag.strip()] += 1
 
-    return [tag for tag, _ in counter.most_common(top_n)]
+    # Calcula score e filtra pelo threshold
+    genre_scores = [
+        (genre, count / total)
+        for genre, count in genre_counter.most_common()
+        if count / total >= RELEVANCE_THRESHOLD
+    ]
+
+    tag_scores = [
+        (tag, count / total)
+        for tag, count in tag_counter.most_common()
+        if count / total >= RELEVANCE_THRESHOLD
+    ]
+
+    return genre_scores, tag_scores
 
 
 def _get_user_anilist_ids(user_id: int, db: Session) -> set[int]:
@@ -158,49 +175,52 @@ def _save_cache(user_id: int, data: list[dict], db: Session) -> None:
     db.commit()
 
 
-def _invalidate_cache(user_id: int, db: Session) -> None:
-    cache = db.scalar(
-        select(RecommendationCache).where(RecommendationCache.user_id == user_id)
-    )
-    if cache:
-        db.delete(cache)
-        db.commit()
-
-
 def get_recommendations(user_id: int, db: Session, force_refresh: bool = False) -> list[dict]:
     if not force_refresh:
         cached = _get_cache(user_id, db)
         if cached is not None:
             return cached
 
-    top_genres = _get_top_genres(user_id, db)
-    top_tags = _get_top_tags(user_id, db)
+    genre_scores, tag_scores = _get_relevance_scores(user_id, db)
 
-    if not top_genres and not top_tags:
+    if not genre_scores and not tag_scores:
         return []
 
     already_in_list = _get_user_anilist_ids(user_id, db)
     seen_ids = set()
     recommendations = []
+    query_count = 0
 
-    for genre in top_genres:
-        results = _fetch(RECOMMENDATION_BY_GENRE_QUERY, {"genre": genre, "page": 1})
+    # Intercala tags e gêneros por relevância
+    # Ex: tag Yuri 90%, gênero Slice of Life 40%, tag Romance 35%...
+    # Assim tags de alta relevância entram antes de gêneros menos relevantes
+    combined = []
+    for genre, score in genre_scores:
+        combined.append(("genre", genre, score))
+    for tag, score in tag_scores:
+        combined.append(("tag", tag, score))
+
+    # Ordena tudo por score decrescente
+    combined.sort(key=lambda x: x[2], reverse=True)
+
+    for kind, name, score in combined:
+        if query_count >= MAX_QUERIES:
+            break
+
+        if kind == "genre":
+            results = _fetch(RECOMMENDATION_BY_GENRE_QUERY, {"genre": name, "page": 1})
+        else:
+            results = _fetch(RECOMMENDATION_BY_TAG_QUERY, {"tag": name, "page": 1})
+
+        query_count += 1
+
         for media in results:
             anilist_id = media["id"]
             if anilist_id in already_in_list or anilist_id in seen_ids:
                 continue
             seen_ids.add(anilist_id)
             recommendations.append(_parse_media(media))
-        time.sleep(2)
 
-    for tag in top_tags:
-        results = _fetch(RECOMMENDATION_BY_TAG_QUERY, {"tag": tag, "page": 1})
-        for media in results:
-            anilist_id = media["id"]
-            if anilist_id in already_in_list or anilist_id in seen_ids:
-                continue
-            seen_ids.add(anilist_id)
-            recommendations.append(_parse_media(media))
         time.sleep(2)
 
     _save_cache(user_id, recommendations, db)
