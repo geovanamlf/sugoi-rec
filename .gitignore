@@ -21,3 +21,6 @@ dist/
 build/
 *.egg-info/
 
+# Rust
+backend-rust/target/
+backend-rust/.env
