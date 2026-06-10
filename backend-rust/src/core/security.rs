@@ -60,7 +60,7 @@ pub fn decode_access_token(token: &str, config: &Config) -> Result<String, AppEr
         &DecodingKey::from_secret(config.jwt_secret_key.as_bytes()),
         &validation,
     )
-    .map_err(|_| AppError::Unauthorized("Invalid or expired token.".to_string()))?;
+    .map_err(|_| AppError::Unauthorized("Invalid token.".to_string()))?;
 
     Ok(token_data.claims.sub)
 }

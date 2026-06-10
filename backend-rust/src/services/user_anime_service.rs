@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use crate::{
     errors::AppError,
-    repositories::user_anime_repository,
+    repositories::{recommendation_repository, user_anime_repository},
     schemas::user_anime::{
         UserAnimeCreate, UserAnimeListItemResponse, UserAnimeResponse, UserAnimeUpdate,
     },
@@ -42,6 +42,8 @@ pub async fn add_anime(
         Utc::now().naive_utc(),
     )
     .await?;
+
+    invalidate_recommendation_cache(db, user_id).await;
 
     Ok(UserAnimeResponse::from(entry))
 }
@@ -85,6 +87,8 @@ pub async fn update_anime(
     let updated =
         user_anime_repository::update(db, existing.id, &status, rating, is_favorite).await?;
 
+    invalidate_recommendation_cache(db, user_id).await;
+
     Ok(UserAnimeResponse::from(updated))
 }
 
@@ -97,7 +101,17 @@ pub async fn remove_anime(db: &sqlx::PgPool, user_id: i32, anime_id: i32) -> Res
 
     user_anime_repository::delete_by_id(db, existing.id).await?;
 
+    invalidate_recommendation_cache(db, user_id).await;
+
     Ok(())
+}
+
+async fn invalidate_recommendation_cache(db: &sqlx::PgPool, user_id: i32) {
+    if let Err(error) = recommendation_repository::delete_recommendation_cache(db, user_id).await {
+        tracing::warn!(
+            "Could not invalidate recommendation cache after user anime list change. user_id={user_id}, error={error}"
+        );
+    }
 }
 
 fn validate_anime_id(anime_id: i32) -> Result<(), AppError> {

@@ -35,10 +35,14 @@ impl Config {
         let jwt_secret_key =
             env::var("JWT_SECRET_KEY").expect("JWT_SECRET_KEY must be set in backend-rust/.env");
 
+        validate_jwt_secret_key(&jwt_secret_key);
+
         let jwt_access_token_expire_minutes = env::var("JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(30);
+
+        validate_jwt_access_token_expire_minutes(jwt_access_token_expire_minutes);
 
         let anilist_url =
             env::var("ANILIST_URL").unwrap_or_else(|_| "https://graphql.anilist.co".to_string());
@@ -57,5 +61,45 @@ impl Config {
 
     pub fn server_address(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+}
+
+fn validate_jwt_secret_key(secret: &str) {
+    let trimmed = secret.trim();
+    let normalized = trimmed.to_lowercase();
+
+    let weak_exact_values = ["change-me", "changeme", "secret", "development", "dev"];
+
+    let weak_fragments = [
+        "change-me",
+        "changeme",
+        "replace-with",
+        "your-secret",
+        "your_secret",
+        "jwt-secret",
+        "jwt_secret",
+        "example",
+        "placeholder",
+    ];
+
+    if weak_exact_values.contains(&normalized.as_str())
+        || weak_fragments
+            .iter()
+            .any(|fragment| normalized.contains(fragment))
+    {
+        panic!("JWT_SECRET_KEY is too weak. Use a strong random secret.");
+    }
+
+    if trimmed.len() < 32 {
+        panic!("JWT_SECRET_KEY is too short. Use at least 32 characters.");
+    }
+}
+
+fn validate_jwt_access_token_expire_minutes(minutes: u64) {
+    const MIN_MINUTES: u64 = 5;
+    const MAX_MINUTES: u64 = 1440;
+
+    if !(MIN_MINUTES..=MAX_MINUTES).contains(&minutes) {
+        panic!("JWT_ACCESS_TOKEN_EXPIRE_MINUTES must be between 5 and 1440 minutes.");
     }
 }

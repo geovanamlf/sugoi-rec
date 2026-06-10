@@ -9,16 +9,26 @@ use crate::{
     schemas::auth::{LoginForm, RegisterRequest, TokenResponse, UserResponse},
 };
 
+const WEAK_PASSWORDS: [&str; 12] = [
+    "123456",
+    "12345678",
+    "123456789",
+    "password",
+    "password123",
+    "senha",
+    "senha123",
+    "qwerty",
+    "qwerty123",
+    "admin",
+    "admin123",
+    "letmein",
+];
+
 pub async fn register(db: &PgPool, payload: RegisterRequest) -> Result<UserResponse, AppError> {
     let email = normalize_email(&payload.email);
 
-    if email.is_empty() {
-        return Err(AppError::BadRequest("Email is required.".to_string()));
-    }
-
-    if payload.password.is_empty() {
-        return Err(AppError::BadRequest("Password is required.".to_string()));
-    }
+    validate_email(&email)?;
+    validate_password(&payload.password)?;
 
     let existing_user = user_repository::find_by_email(db, &email).await?;
 
@@ -53,12 +63,14 @@ pub async fn login(
 ) -> Result<TokenResponse, AppError> {
     let email = normalize_email(&payload.username);
 
+    validate_login_payload(&email, &payload.password)?;
+
     let user = user_repository::find_by_email(db, &email)
         .await?
-        .ok_or_else(|| AppError::Unauthorized("Invalid credentials.".to_string()))?;
+        .ok_or_else(invalid_credentials)?;
 
     if !verify_password(&payload.password, &user.password_hash) {
-        return Err(AppError::Unauthorized("Invalid credentials.".to_string()));
+        return Err(invalid_credentials());
     }
 
     let access_token = create_access_token(&user.id.to_string(), config)?;
@@ -77,19 +89,87 @@ pub async fn current_user(
     let token = extract_bearer_token(authorization)?;
     let subject = decode_access_token(token, config)?;
 
-    let user_id = subject
-        .parse::<i32>()
-        .map_err(|_| AppError::Unauthorized("Invalid token subject.".to_string()))?;
+    let user_id = subject.parse::<i32>().map_err(|_| invalid_token())?;
 
     let user = user_repository::find_by_id(db, user_id)
         .await?
-        .ok_or_else(|| AppError::Unauthorized("User not found.".to_string()))?;
+        .ok_or_else(invalid_token)?;
 
     Ok(UserResponse::from(user))
 }
 
 fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
+}
+
+fn validate_email(email: &str) -> Result<(), AppError> {
+    if email.is_empty() {
+        return Err(AppError::BadRequest("Email is required.".to_string()));
+    }
+
+    if email.len() > 254 {
+        return Err(AppError::BadRequest("Email is too long.".to_string()));
+    }
+
+    let has_single_at = email.matches('@').count() == 1;
+
+    if !has_single_at {
+        return Err(AppError::BadRequest("Invalid email format.".to_string()));
+    }
+
+    let (local_part, domain) = email
+        .split_once('@')
+        .ok_or_else(|| AppError::BadRequest("Invalid email format.".to_string()))?;
+
+    if local_part.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return Err(AppError::BadRequest("Invalid email format.".to_string()));
+    }
+
+    Ok(())
+}
+
+fn validate_password(password: &str) -> Result<(), AppError> {
+    if password.is_empty() {
+        return Err(AppError::BadRequest("Password is required.".to_string()));
+    }
+
+    if password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "Password must be at least 8 characters long.".to_string(),
+        ));
+    }
+
+    if password.len() > 72 {
+        return Err(AppError::BadRequest(
+            "Password too long (max 72 bytes).".to_string(),
+        ));
+    }
+
+    let normalized = password.trim().to_lowercase();
+
+    if WEAK_PASSWORDS.contains(&normalized.as_str()) {
+        return Err(AppError::BadRequest(
+            "Password is too common or weak.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_login_payload(email: &str, password: &str) -> Result<(), AppError> {
+    if email.is_empty() || password.is_empty() {
+        return Err(invalid_credentials());
+    }
+
+    Ok(())
+}
+
+fn invalid_credentials() -> AppError {
+    AppError::Unauthorized("Invalid credentials.".to_string())
+}
+
+fn invalid_token() -> AppError {
+    AppError::Unauthorized("Invalid token.".to_string())
 }
 
 fn extract_bearer_token(authorization: Option<&HeaderValue>) -> Result<&str, AppError> {
@@ -100,9 +180,29 @@ fn extract_bearer_token(authorization: Option<&HeaderValue>) -> Result<&str, App
         .to_str()
         .map_err(|_| AppError::Unauthorized("Invalid authorization header.".to_string()))?;
 
-    value
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| AppError::Unauthorized("Invalid authorization scheme.".to_string()))
+    let mut parts = value.split_whitespace();
+
+    let scheme = parts
+        .next()
+        .ok_or_else(|| AppError::Unauthorized("Invalid authorization scheme.".to_string()))?;
+
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return Err(AppError::Unauthorized(
+            "Invalid authorization scheme.".to_string(),
+        ));
+    }
+
+    let token = parts
+        .next()
+        .ok_or_else(|| AppError::Unauthorized("Invalid authorization header.".to_string()))?;
+
+    if parts.next().is_some() {
+        return Err(AppError::Unauthorized(
+            "Invalid authorization header.".to_string(),
+        ));
+    }
+
+    Ok(token)
 }
 
 fn is_unique_violation(error: &sqlx::Error) -> bool {
