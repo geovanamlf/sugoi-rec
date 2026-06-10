@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import api from "../api/client"
 
@@ -8,23 +8,75 @@ export default function Recommendations() {
   const [refreshing, setRefreshing] = useState(false)
   const [adding, setAdding] = useState(null)
   const [activeGenre, setActiveGenre] = useState("TODOS")
+  const [error, setError] = useState(null)
+
+  const requestIdRef = useRef(0)
   const navigate = useNavigate()
 
-  function loadRecs(refresh = false) {
-    if (refresh) setRefreshing(true)
-    else setLoading(true)
+  function loadRecs(refresh = false, signal) {
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
 
-    api.get(`/recommendations/?refresh=${refresh}`)
-      .then((res) => setRecs(res.data))
-      .catch(() => {})
+    setError(null)
+
+    if (refresh) {
+      setRefreshing(true)
+    } else if (recs.length === 0) {
+      setLoading(true)
+    }
+
+    api.get(`/recommendations/?refresh=${refresh}`, { signal })
+      .then((res) => {
+        if (requestId !== requestIdRef.current) return
+
+        setRecs(res.data)
+      })
+      .catch((err) => {
+        if (requestId !== requestIdRef.current) return
+
+        if (err?.code === "ERR_CANCELED" || err?.name === "CanceledError") {
+          return
+        }
+
+        const status = err?.response?.status
+        const detail = err?.response?.data?.detail
+
+        console.error("Erro ao carregar recomendações:", status, err?.response?.data || err)
+
+        if (status === 429) {
+          setError("A AniList limitou as buscas por enquanto. Aguarde um pouco ou use recomendações já carregadas.")
+          return
+        }
+
+        if (status === 401) {
+          setError("Sua sessão expirou. Faça login novamente.")
+          return
+        }
+
+        if (status === 503) {
+          setError("A AniList está instável agora. Tente novamente em alguns minutos.")
+          return
+        }
+
+        setError(detail || "Não foi possível carregar recomendações agora.")
+      })
       .finally(() => {
+        if (requestId !== requestIdRef.current) return
+
         setLoading(false)
         setRefreshing(false)
       })
   }
 
   useEffect(() => {
-    loadRecs()
+    const controller = new AbortController()
+
+    loadRecs(false, controller.signal)
+
+    return () => {
+      controller.abort()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const allGenres = useMemo(() => {
@@ -36,6 +88,10 @@ export default function Recommendations() {
   const filtered = activeGenre === "TODOS"
     ? recs
     : recs.filter((anime) => anime.genres?.includes(activeGenre))
+
+  function handleRecommendationAdded(anilistId) {
+    setRecs((current) => current.filter((anime) => anime.anilist_id !== anilistId))
+  }
 
   return (
     <div className="min-h-screen">
@@ -50,7 +106,7 @@ export default function Recommendations() {
             className="pixel-btn"
             style={{ fontSize: "13px", opacity: refreshing ? 0.6 : 1 }}
             onClick={() => loadRecs(true)}
-            disabled={refreshing}
+            disabled={refreshing || loading}
           >
             {refreshing ? "⌛ atualizando..." : "↺ atualizar"}
           </button>
@@ -62,7 +118,20 @@ export default function Recommendations() {
           </div>
         )}
 
-        {!loading && recs.length === 0 && (
+        {!loading && error && (
+          <div className="pixel-box" style={{ maxWidth: "520px", marginBottom: "1.5rem" }}>
+            <p style={{ fontSize: "14px", color: "#e07070", lineHeight: "1.7" }}>
+              {error}
+            </p>
+            {recs.length > 0 && (
+              <p style={{ fontSize: "12px", color: "#a8a8c0", marginTop: "0.75rem" }}>
+                mantendo as recomendações que já estavam carregadas.
+              </p>
+            )}
+          </div>
+        )}
+
+        {!loading && !error && recs.length === 0 && (
           <div className="pixel-box" style={{ maxWidth: "400px" }}>
             <p style={{ fontSize: "14px", color: "#a8a8c0" }}>
               nenhuma recomendação ainda.<br /><br />
@@ -141,33 +210,64 @@ export default function Recommendations() {
         <AddModal
           anime={adding}
           onClose={() => setAdding(null)}
+          onAdded={handleRecommendationAdded}
         />
       )}
     </div>
   )
 }
 
-function AddModal({ anime, onClose }) {
+function AddModal({ anime, onClose, onAdded }) {
   const [status, setStatus] = useState("planned")
   const [rating, setRating] = useState("")
   const [favorite, setFavorite] = useState(false)
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
 
   async function handleAdd() {
+    if (submitting) return
+
     setError(null)
+    setSubmitting(true)
+
     try {
       const res = await api.get(`/anime/id/${anime.anilist_id}`)
       const animeData = res.data
+
       await api.post("/list/", {
         anime_id: animeData.id,
         status,
         rating: rating ? parseInt(rating) : null,
         is_favorite: favorite,
       })
+
+      onAdded(anime.anilist_id)
       setSuccess(true)
-    } catch {
-      setError("erro ao adicionar. talvez já esteja na lista.")
+    } catch (err) {
+      const statusCode = err?.response?.status
+      const detail = err?.response?.data?.detail
+
+      console.error("Erro ao adicionar recomendação:", statusCode, err?.response?.data || err)
+
+      if (statusCode === 400 && detail?.toLowerCase?.().includes("already")) {
+        setError("esse anime já está na sua lista.")
+        return
+      }
+
+      if (statusCode === 404) {
+        setError("anime não encontrado no backend. tente abrir o card e adicionar de novo.")
+        return
+      }
+
+      if (statusCode === 429) {
+        setError("a AniList limitou as buscas agora. tente novamente em alguns minutos.")
+        return
+      }
+
+      setError(detail || "erro ao adicionar. talvez já esteja na lista.")
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -225,7 +325,8 @@ function AddModal({ anime, onClose }) {
                 placeholder="opcional"
                 value={rating}
                 onChange={(e) => setRating(e.target.value)}
-                min={1} max={10}
+                min={1}
+                max={10}
               />
             </div>
 
@@ -237,10 +338,19 @@ function AddModal({ anime, onClose }) {
             {error && <p style={{ fontSize: "13px", color: "#e07070" }}>✗ {error}</p>}
 
             <div style={{ display: "flex", gap: "0.75rem" }}>
-              <button className="pixel-btn" style={{ flex: 1 }} onClick={handleAdd}>
-                + ADICIONAR
+              <button
+                className="pixel-btn"
+                style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}
+                onClick={handleAdd}
+                disabled={submitting}
+              >
+                {submitting ? "⌛ adicionando..." : "+ ADICIONAR"}
               </button>
-              <button className="pixel-btn pixel-btn-danger" onClick={onClose}>
+              <button
+                className="pixel-btn pixel-btn-danger"
+                onClick={onClose}
+                disabled={submitting}
+              >
                 ✕
               </button>
             </div>

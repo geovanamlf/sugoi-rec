@@ -1,0 +1,26 @@
+[package]
+name = "sugoi-rec-rust-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1.47", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "set-header"] }
+
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "migrate"] }
+
+chrono = { version = "0.4", features = ["serde"] }
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+dotenvy = "0.15"
+
+bcrypt = "0.17"
+jsonwebtoken = "9"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
