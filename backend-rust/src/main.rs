@@ -9,6 +9,8 @@ mod routes;
 mod schemas;
 mod services;
 
+use std::time::Duration;
+
 use app_state::AppState;
 use config::Config;
 use routes::create_router;
@@ -16,6 +18,8 @@ use routes::create_router;
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tracing::info;
+
+const HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 10;
 
 #[tokio::main]
 async fn main() {
@@ -35,7 +39,15 @@ async fn main() {
         .await
         .expect("Failed to connect to PostgreSQL database.");
 
-    let http_client = reqwest::Client::new();
+    sqlx::migrate!("./migrations")
+        .run(&db)
+        .await
+        .expect("Failed to run database migrations.");
+
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_CLIENT_TIMEOUT_SECONDS))
+        .build()
+        .expect("Failed to build HTTP client.");
 
     let state = AppState::new(config, db, http_client);
     let app = create_router(state);

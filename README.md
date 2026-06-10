@@ -2,9 +2,15 @@
 
 Anime list and recommendation app.
 
-The project uses a Rust backend, PostgreSQL, AniList integration, and a React frontend.
+The project uses a Rust backend, PostgreSQL, SQLx migrations, AniList integration, and a React frontend.
 
 ## Run
+
+**Database:**
+
+Create a PostgreSQL database matching the `DATABASE_URL` configured in `backend-rust/.env`.
+
+The Rust backend applies SQLx migrations automatically on startup.
 
 **Backend:**
 
@@ -17,7 +23,7 @@ cargo run
 
 The backend runs by default at:
 
-```bash
+```text
 http://127.0.0.1:8080
 ```
 
@@ -31,7 +37,7 @@ npm run dev
 
 The frontend runs by default at:
 
-```bash
+```text
 http://localhost:5173
 ```
 
