@@ -1,6 +1,11 @@
-# Ambiente virtual
-venv/
+# Environment
 .env
+venv/
+backend-rust/.env
+
+# Node
+node_modules/
+frontend/node_modules/
 
 # Python
 __pycache__/
@@ -19,8 +24,8 @@ __pycache__/
 # Build
 dist/
 build/
+frontend/dist/
 *.egg-info/
 
 # Rust
 backend-rust/target/
-backend-rust/.env
