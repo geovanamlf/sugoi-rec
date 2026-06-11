@@ -1,9 +1,13 @@
+use std::time::Duration;
+
 use axum::{
     extract::{Form, State},
     http::{header::AUTHORIZATION, HeaderMap},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use tower_governor::{errors::GovernorError, governor::GovernorConfigBuilder, GovernorLayer};
 
 use crate::{
     app_state::AppState,
@@ -12,11 +16,48 @@ use crate::{
     services::auth_service,
 };
 
+const LOGIN_RATE_LIMIT_BURST: u32 = 5;
+const LOGIN_RATE_LIMIT_REPLENISH_SECONDS: u64 = 12;
+
+const REGISTER_RATE_LIMIT_BURST: u32 = 3;
+const REGISTER_RATE_LIMIT_REPLENISH_SECONDS: u64 = 20;
+
+const AUTH_RATE_LIMIT_MESSAGE: &str = "Too many authentication attempts. Please try again later.";
+
 pub fn routes() -> Router<AppState> {
-    Router::new()
+    let login_rate_limit_config = GovernorConfigBuilder::default()
+        .period(Duration::from_secs(LOGIN_RATE_LIMIT_REPLENISH_SECONDS))
+        .burst_size(LOGIN_RATE_LIMIT_BURST)
+        .finish()
+        .expect("Failed to build login rate limit configuration.");
+
+    let register_rate_limit_config = GovernorConfigBuilder::default()
+        .period(Duration::from_secs(REGISTER_RATE_LIMIT_REPLENISH_SECONDS))
+        .burst_size(REGISTER_RATE_LIMIT_BURST)
+        .finish()
+        .expect("Failed to build register rate limit configuration.");
+
+    let register_routes = Router::new()
         .route("/auth/register", post(register))
-        .route("/auth/login", post(login))
+        .route_layer(
+            GovernorLayer::new(register_rate_limit_config)
+                .error_handler(auth_rate_limit_error_handler),
+        );
+
+    let login_routes = Router::new().route("/auth/login", post(login)).route_layer(
+        GovernorLayer::new(login_rate_limit_config).error_handler(auth_rate_limit_error_handler),
+    );
+
+    Router::new()
+        .merge(register_routes)
+        .merge(login_routes)
         .route("/auth/me", get(me))
+}
+
+fn auth_rate_limit_error_handler(error: GovernorError) -> Response {
+    tracing::warn!("Authentication rate limit exceeded: {error}");
+
+    AppError::TooManyRequests(AUTH_RATE_LIMIT_MESSAGE.to_string()).into_response()
 }
 
 async fn register(

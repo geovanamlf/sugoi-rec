@@ -9,7 +9,7 @@ mod routes;
 mod schemas;
 mod services;
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use app_state::AppState;
 use config::Config;
@@ -58,7 +58,10 @@ async fn main() {
 
     info!("Sugoi Rec Rust API running at http://{}", address);
 
-    axum::serve(listener, app)
-        .await
-        .expect("Failed to start Axum server.");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("Failed to start Axum server.");
 }
