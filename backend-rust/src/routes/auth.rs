@@ -12,7 +12,7 @@ use tower_governor::{errors::GovernorError, governor::GovernorConfigBuilder, Gov
 use crate::{
     app_state::AppState,
     errors::AppError,
-    schemas::auth::{LoginForm, RegisterRequest, TokenResponse, UserResponse},
+    schemas::auth::{LoginForm, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse},
     services::auth_service,
 };
 
@@ -51,6 +51,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(register_routes)
         .merge(login_routes)
+        .route("/auth/refresh", post(refresh))
         .route("/auth/me", get(me))
 }
 
@@ -73,6 +74,14 @@ async fn login(
     Form(payload): Form<LoginForm>,
 ) -> Result<Json<TokenResponse>, AppError> {
     let token = auth_service::login(&state.db, &state.config, payload).await?;
+    Ok(Json(token))
+}
+
+async fn refresh(
+    State(state): State<AppState>,
+    Json(payload): Json<RefreshTokenRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    let token = auth_service::refresh_token(&state.db, &state.config, payload).await?;
     Ok(Json(token))
 }
 

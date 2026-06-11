@@ -1,12 +1,16 @@
 use axum::http::HeaderValue;
+use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::PgPool;
 
 use crate::{
     config::Config,
-    core::security::{create_access_token, decode_access_token, hash_password, verify_password},
+    core::security::{
+        access_token_expires_in_seconds, create_access_token, create_refresh_token,
+        decode_access_token, hash_password, hash_refresh_token, verify_password,
+    },
     errors::AppError,
-    repositories::user_repository,
-    schemas::auth::{LoginForm, RegisterRequest, TokenResponse, UserResponse},
+    repositories::{refresh_token_repository, user_repository},
+    schemas::auth::{LoginForm, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse},
 };
 
 const WEAK_PASSWORDS: [&str; 12] = [
@@ -23,6 +27,8 @@ const WEAK_PASSWORDS: [&str; 12] = [
     "admin123",
     "letmein",
 ];
+
+const MAX_REFRESH_TOKEN_LENGTH: usize = 512;
 
 pub async fn register(db: &PgPool, payload: RegisterRequest) -> Result<UserResponse, AppError> {
     let email = normalize_email(&payload.email);
@@ -73,11 +79,84 @@ pub async fn login(
         return Err(invalid_credentials());
     }
 
-    let access_token = create_access_token(&user.id.to_string(), config)?;
+    issue_token_pair(db, config, user.id).await
+}
+
+pub async fn refresh_token(
+    db: &PgPool,
+    config: &Config,
+    payload: RefreshTokenRequest,
+) -> Result<TokenResponse, AppError> {
+    validate_refresh_token_payload(&payload.refresh_token)?;
+
+    let token_hash = hash_refresh_token(&payload.refresh_token);
+    let now = Utc::now();
+
+    let mut transaction = db.begin().await?;
+
+    let stored_token =
+        match refresh_token_repository::find_by_hash_for_update(&mut transaction, &token_hash)
+            .await?
+        {
+            Some(token) => token,
+            None => return Err(invalid_refresh_token()),
+        };
+
+    if stored_token.revoked_at.is_some() {
+        refresh_token_repository::revoke_active_tokens_for_user(
+            &mut transaction,
+            stored_token.user_id,
+        )
+        .await?;
+
+        transaction.commit().await?;
+
+        tracing::warn!(
+            user_id = stored_token.user_id,
+            refresh_token_id = %stored_token.id,
+            "Refresh token reuse detected. Active tokens for user were revoked."
+        );
+
+        return Err(invalid_refresh_token());
+    }
+
+    if stored_token.expires_at <= now {
+        refresh_token_repository::revoke_by_id(&mut transaction, stored_token.id, None).await?;
+
+        transaction.commit().await?;
+
+        return Err(invalid_refresh_token());
+    }
+
+    let new_refresh_token = create_refresh_token();
+    let new_refresh_token_hash = hash_refresh_token(&new_refresh_token);
+    let new_refresh_token_expires_at =
+        Utc::now() + ChronoDuration::days(config.refresh_token_expire_days);
+
+    let new_stored_token = refresh_token_repository::create_in_transaction(
+        &mut transaction,
+        stored_token.user_id,
+        &new_refresh_token_hash,
+        new_refresh_token_expires_at,
+    )
+    .await?;
+
+    refresh_token_repository::revoke_by_id(
+        &mut transaction,
+        stored_token.id,
+        Some(new_stored_token.id),
+    )
+    .await?;
+
+    transaction.commit().await?;
+
+    let access_token = create_access_token(&stored_token.user_id.to_string(), config)?;
 
     Ok(TokenResponse {
         access_token,
+        refresh_token: new_refresh_token,
         token_type: "bearer",
+        expires_in: access_token_expires_in_seconds(config),
     })
 }
 
@@ -96,6 +175,29 @@ pub async fn current_user(
         .ok_or_else(invalid_token)?;
 
     Ok(UserResponse::from(user))
+}
+
+async fn issue_token_pair(
+    db: &PgPool,
+    config: &Config,
+    user_id: i32,
+) -> Result<TokenResponse, AppError> {
+    let access_token = create_access_token(&user_id.to_string(), config)?;
+
+    let refresh_token = create_refresh_token();
+    let refresh_token_hash = hash_refresh_token(&refresh_token);
+    let refresh_token_expires_at =
+        Utc::now() + ChronoDuration::days(config.refresh_token_expire_days);
+
+    refresh_token_repository::create(db, user_id, &refresh_token_hash, refresh_token_expires_at)
+        .await?;
+
+    Ok(TokenResponse {
+        access_token,
+        refresh_token,
+        token_type: "bearer",
+        expires_in: access_token_expires_in_seconds(config),
+    })
 }
 
 fn normalize_email(email: &str) -> String {
@@ -164,12 +266,28 @@ fn validate_login_payload(email: &str, password: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_refresh_token_payload(refresh_token: &str) -> Result<(), AppError> {
+    if refresh_token.is_empty() {
+        return Err(invalid_refresh_token());
+    }
+
+    if refresh_token.len() > MAX_REFRESH_TOKEN_LENGTH {
+        return Err(invalid_refresh_token());
+    }
+
+    Ok(())
+}
+
 fn invalid_credentials() -> AppError {
     AppError::Unauthorized("Invalid credentials.".to_string())
 }
 
 fn invalid_token() -> AppError {
     AppError::Unauthorized("Invalid token.".to_string())
+}
+
+fn invalid_refresh_token() -> AppError {
+    AppError::Unauthorized("Invalid refresh token.".to_string())
 }
 
 fn extract_bearer_token(authorization: Option<&HeaderValue>) -> Result<&str, AppError> {

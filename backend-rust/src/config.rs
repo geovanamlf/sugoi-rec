@@ -9,6 +9,7 @@ pub struct Config {
     pub database_max_connections: u32,
     pub jwt_secret_key: String,
     pub jwt_access_token_expire_minutes: u64,
+    pub refresh_token_expire_days: i64,
     pub anilist_url: String,
 }
 
@@ -40,9 +41,16 @@ impl Config {
         let jwt_access_token_expire_minutes = env::var("JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(30);
+            .unwrap_or(15);
 
         validate_jwt_access_token_expire_minutes(jwt_access_token_expire_minutes);
+
+        let refresh_token_expire_days = env::var("REFRESH_TOKEN_EXPIRE_DAYS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(7);
+
+        validate_refresh_token_expire_days(refresh_token_expire_days);
 
         let anilist_url =
             env::var("ANILIST_URL").unwrap_or_else(|_| "https://graphql.anilist.co".to_string());
@@ -55,6 +63,7 @@ impl Config {
             database_max_connections,
             jwt_secret_key,
             jwt_access_token_expire_minutes,
+            refresh_token_expire_days,
             anilist_url,
         }
     }
@@ -101,5 +110,14 @@ fn validate_jwt_access_token_expire_minutes(minutes: u64) {
 
     if !(MIN_MINUTES..=MAX_MINUTES).contains(&minutes) {
         panic!("JWT_ACCESS_TOKEN_EXPIRE_MINUTES must be between 5 and 1440 minutes.");
+    }
+}
+
+fn validate_refresh_token_expire_days(days: i64) {
+    const MIN_DAYS: i64 = 1;
+    const MAX_DAYS: i64 = 30;
+
+    if !(MIN_DAYS..=MAX_DAYS).contains(&days) {
+        panic!("REFRESH_TOKEN_EXPIRE_DAYS must be between 1 and 30 days.");
     }
 }

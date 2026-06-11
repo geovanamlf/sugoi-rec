@@ -9,7 +9,7 @@ tokio = { version = "1.47", features = ["full"] }
 tower_governor = { version = "0.8", features = ["axum"] }
 tower-http = { version = "0.6", features = ["cors", "set-header"] }
 
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "migrate", "uuid"] }
 
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -22,6 +22,8 @@ dotenvy = "0.15"
 
 bcrypt = "0.17"
 jsonwebtoken = "9"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -3,8 +3,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::{config::Config, errors::AppError};
+
+const REFRESH_TOKEN_PREFIX: &str = "sr_rt_";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Claims {
@@ -34,7 +38,7 @@ pub fn create_access_token(subject: &str, config: &Config) -> Result<String, App
         .duration_since(UNIX_EPOCH)
         .map_err(|_| AppError::Internal("Invalid system time.".to_string()))?;
 
-    let expiration = now + Duration::from_secs(config.jwt_access_token_expire_minutes * 60);
+    let expiration = now + Duration::from_secs(access_token_expires_in_seconds(config));
 
     let claims = Claims {
         sub: subject.to_string(),
@@ -63,4 +67,22 @@ pub fn decode_access_token(token: &str, config: &Config) -> Result<String, AppEr
     .map_err(|_| AppError::Unauthorized("Invalid token.".to_string()))?;
 
     Ok(token_data.claims.sub)
+}
+
+pub fn access_token_expires_in_seconds(config: &Config) -> u64 {
+    config.jwt_access_token_expire_minutes * 60
+}
+
+pub fn create_refresh_token() -> String {
+    format!(
+        "{}{}{}",
+        REFRESH_TOKEN_PREFIX,
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    )
+}
+
+pub fn hash_refresh_token(refresh_token: &str) -> String {
+    let digest = Sha256::digest(refresh_token.as_bytes());
+    format!("{digest:x}")
 }
