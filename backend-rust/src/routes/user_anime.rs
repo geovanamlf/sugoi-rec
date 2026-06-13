@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     routing::{get, patch},
     Json, Router,
@@ -11,7 +11,8 @@ use crate::{
     schemas::{
         auth::UserResponse,
         user_anime::{
-            UserAnimeCreate, UserAnimeListItemResponse, UserAnimeResponse, UserAnimeUpdate,
+            UserAnimeCreate, UserAnimeListQuery, UserAnimeListResponse, UserAnimeResponse,
+            UserAnimeUpdate,
         },
     },
     services::{auth_service, user_anime_service},
@@ -39,10 +40,11 @@ async fn add_anime(
 async fn list_anime(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<UserAnimeListItemResponse>>, AppError> {
+    Query(query): Query<UserAnimeListQuery>,
+) -> Result<Json<UserAnimeListResponse>, AppError> {
     let current_user = require_authenticated_user(&state, &headers).await?;
 
-    let list = user_anime_service::list_anime(&state.db, current_user.id).await?;
+    let list = user_anime_service::list_anime(&state.db, current_user.id, query).await?;
 
     Ok(Json(list))
 }

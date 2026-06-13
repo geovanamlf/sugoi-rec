@@ -4,11 +4,20 @@ use crate::{
     errors::AppError,
     repositories::{recommendation_repository, user_anime_repository},
     schemas::user_anime::{
-        UserAnimeCreate, UserAnimeListItemResponse, UserAnimeResponse, UserAnimeUpdate,
+        UserAnimeCreate, UserAnimeListItemResponse, UserAnimeListQuery, UserAnimeListResponse,
+        UserAnimeResponse, UserAnimeUpdate,
     },
 };
 
 const VALID_STATUSES: [&str; 4] = ["watching", "completed", "dropped", "planned"];
+
+const DEFAULT_LIST_LIMIT: i64 = 20;
+const MAX_LIST_LIMIT: i64 = 100;
+
+struct Pagination {
+    limit: i64,
+    offset: i64,
+}
 
 pub async fn add_anime(
     db: &sqlx::PgPool,
@@ -51,13 +60,27 @@ pub async fn add_anime(
 pub async fn list_anime(
     db: &sqlx::PgPool,
     user_id: i32,
-) -> Result<Vec<UserAnimeListItemResponse>, AppError> {
-    let rows = user_anime_repository::list_by_user(db, user_id).await?;
+    query: UserAnimeListQuery,
+) -> Result<UserAnimeListResponse, AppError> {
+    let pagination = validate_pagination(query.limit, query.offset)?;
 
-    Ok(rows
+    let rows =
+        user_anime_repository::list_by_user(db, user_id, pagination.limit, pagination.offset)
+            .await?;
+
+    let total = user_anime_repository::count_by_user(db, user_id).await?;
+
+    let items = rows
         .into_iter()
         .map(UserAnimeListItemResponse::from)
-        .collect())
+        .collect();
+
+    Ok(UserAnimeListResponse {
+        items,
+        limit: pagination.limit,
+        offset: pagination.offset,
+        total,
+    })
 }
 
 pub async fn update_anime(
@@ -144,4 +167,29 @@ fn validate_rating(rating: Option<i32>) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn validate_pagination(limit: Option<i64>, offset: Option<i64>) -> Result<Pagination, AppError> {
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT);
+    let offset = offset.unwrap_or(0);
+
+    if limit < 1 {
+        return Err(AppError::BadRequest(
+            "Limit must be at least 1.".to_string(),
+        ));
+    }
+
+    if limit > MAX_LIST_LIMIT {
+        return Err(AppError::BadRequest(format!(
+            "Limit must be at most {MAX_LIST_LIMIT}."
+        )));
+    }
+
+    if offset < 0 {
+        return Err(AppError::BadRequest(
+            "Offset must be at least 0.".to_string(),
+        ));
+    }
+
+    Ok(Pagination { limit, offset })
 }
