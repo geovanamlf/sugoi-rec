@@ -11,14 +11,17 @@ use axum::{
         header::{AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS},
         HeaderName, HeaderValue, Method,
     },
-    Router,
+    middleware, Router,
 };
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::app_state::AppState;
+use crate::{
+    app_state::AppState,
+    middleware::request_id::{add_request_id, X_REQUEST_ID},
+};
 
 const MAX_REQUEST_BODY_SIZE: usize = 1024 * 1024;
 const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
@@ -37,7 +40,8 @@ pub fn create_router(state: AppState) -> Router {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([AUTHORIZATION, CONTENT_TYPE]);
+        .allow_headers([AUTHORIZATION, CONTENT_TYPE, X_REQUEST_ID])
+        .expose_headers([X_REQUEST_ID]);
 
     Router::new()
         .merge(health::routes())
@@ -47,6 +51,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(analytics::routes())
         .merge(recommendations::routes())
         .layer(cors)
+        .layer(middleware::from_fn(add_request_id))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_SIZE))
         .layer(SetResponseHeaderLayer::if_not_present(
             X_CONTENT_TYPE_OPTIONS,

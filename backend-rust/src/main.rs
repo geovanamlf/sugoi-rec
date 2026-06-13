@@ -3,6 +3,7 @@ mod clients;
 mod config;
 mod core;
 mod errors;
+mod middleware;
 mod models;
 mod repositories;
 mod routes;
