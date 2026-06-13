@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::{
     extract::{Form, State},
-    http::{header::AUTHORIZATION, HeaderMap},
+    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -12,7 +12,9 @@ use tower_governor::{errors::GovernorError, governor::GovernorConfigBuilder, Gov
 use crate::{
     app_state::AppState,
     errors::AppError,
-    schemas::auth::{LoginForm, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse},
+    schemas::auth::{
+        LoginForm, LogoutRequest, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse,
+    },
     services::auth_service,
 };
 
@@ -52,6 +54,7 @@ pub fn routes() -> Router<AppState> {
         .merge(register_routes)
         .merge(login_routes)
         .route("/auth/refresh", post(refresh))
+        .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
 }
 
@@ -83,6 +86,22 @@ async fn refresh(
 ) -> Result<Json<TokenResponse>, AppError> {
     let token = auth_service::refresh_token(&state.db, &state.config, payload).await?;
     Ok(Json(token))
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<LogoutRequest>,
+) -> Result<StatusCode, AppError> {
+    auth_service::logout(
+        &state.db,
+        &state.config,
+        headers.get(AUTHORIZATION),
+        payload,
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn me(

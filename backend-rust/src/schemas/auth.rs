@@ -19,6 +19,11 @@ pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LogoutRequest {
+    pub refresh_token: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
     pub id: i32,

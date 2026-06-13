@@ -10,7 +10,9 @@ use crate::{
     },
     errors::AppError,
     repositories::{refresh_token_repository, user_repository},
-    schemas::auth::{LoginForm, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse},
+    schemas::auth::{
+        LoginForm, LogoutRequest, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse,
+    },
 };
 
 const WEAK_PASSWORDS: [&str; 12] = [
@@ -158,6 +160,30 @@ pub async fn refresh_token(
         token_type: "bearer",
         expires_in: access_token_expires_in_seconds(config),
     })
+}
+
+pub async fn logout(
+    db: &PgPool,
+    config: &Config,
+    authorization: Option<&HeaderValue>,
+    payload: LogoutRequest,
+) -> Result<(), AppError> {
+    let current_user = current_user(db, config, authorization).await?;
+
+    validate_refresh_token_payload(&payload.refresh_token)?;
+
+    let token_hash = hash_refresh_token(&payload.refresh_token);
+
+    let revoked_count =
+        refresh_token_repository::revoke_by_hash_for_user(db, current_user.id, &token_hash).await?;
+
+    tracing::info!(
+        user_id = current_user.id,
+        revoked_refresh_tokens = revoked_count,
+        "User logout requested."
+    );
+
+    Ok(())
 }
 
 pub async fn current_user(
