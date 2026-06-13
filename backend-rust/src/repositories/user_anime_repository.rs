@@ -38,9 +38,24 @@ pub async fn find_by_user_and_anime(
     .await
 }
 
+pub async fn count_by_user(db: &PgPool, user_id: i32) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM user_anime
+        WHERE user_id = $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_one(db)
+    .await
+}
+
 pub async fn list_by_user(
     db: &PgPool,
     user_id: i32,
+    limit: i64,
+    offset: i64,
 ) -> Result<Vec<UserAnimeWithAnime>, sqlx::Error> {
     sqlx::query_as::<_, UserAnimeWithAnime>(
         r#"
@@ -63,9 +78,13 @@ pub async fn list_by_user(
         JOIN anime_cache a ON a.id = ua.anime_id
         WHERE ua.user_id = $1
         ORDER BY ua.added_at DESC, ua.id DESC
+        LIMIT $2
+        OFFSET $3
         "#,
     )
     .bind(user_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(db)
     .await
 }

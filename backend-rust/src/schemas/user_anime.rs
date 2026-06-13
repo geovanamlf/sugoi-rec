@@ -25,6 +25,12 @@ pub struct UserAnimeUpdate {
     pub is_favorite: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UserAnimeListQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct UserAnimeResponse {
     pub id: i32,
@@ -34,6 +40,14 @@ pub struct UserAnimeResponse {
     pub rating: Option<i32>,
     pub is_favorite: bool,
     pub added_at: NaiveDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserAnimeListResponse {
+    pub items: Vec<UserAnimeListItemResponse>,
+    pub limit: i64,
+    pub offset: i64,
+    pub total: i64,
 }
 
 #[derive(Debug, Serialize)]

@@ -7,6 +7,7 @@ export default function Dashboard() {
   const { logout } = useAuth()
   const navigate = useNavigate()
   const [list, setList] = useState([])
+  const [listTotal, setListTotal] = useState(0)
   const [stats, setStats] = useState(null)
   const [genres, setGenres] = useState([])
   const [filter, setFilter] = useState("all")
@@ -17,7 +18,14 @@ export default function Dashboard() {
   }, [])
 
   function loadData() {
-    api.get("/list/").then((res) => setList(res.data))
+    api.get("/list/?limit=100&offset=0").then((res) => {
+      const data = res.data
+      const items = Array.isArray(data) ? data : data.items ?? []
+
+      setList(items)
+      setListTotal(Array.isArray(data) ? items.length : data.total ?? items.length)
+    })
+
     api.get("/analytics/ratings").then((res) => setStats(res.data))
     api.get("/analytics/genres").then((res) => setGenres(res.data.slice(0, 5)))
   }
@@ -102,7 +110,7 @@ export default function Dashboard() {
               <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", fontSize: "14px" }}>
                 <p>média de rating: <span style={{ color: "#a8c5a0", fontWeight: 700 }}>{stats.average_rating ?? "—"}</span></p>
                 <p>animes avaliados: <span style={{ color: "#a8c5a0", fontWeight: 700 }}>{stats.rated_count}</span></p>
-                <p>total na lista: <span style={{ color: "#a8c5a0", fontWeight: 700 }}>{list.length}</span></p>
+                <p>total na lista: <span style={{ color: "#a8c5a0", fontWeight: 700 }}>{listTotal}</span></p>
               </div>
             )}
           </div>
@@ -122,7 +130,7 @@ export default function Dashboard() {
 
         {/* Lista */}
         <div className="pixel-box">
-          <h2 className="pixel-subtitle">📋 minha lista ({list.length})</h2>
+          <h2 className="pixel-subtitle">📋 minha lista ({list.length} de {listTotal})</h2>
 
           {/* Filtros */}
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
@@ -247,7 +255,8 @@ function EditModal({ item, onClose, onSave }) {
               placeholder="opcional"
               value={rating}
               onChange={(e) => setRating(e.target.value)}
-              min={1} max={10}
+              min={1}
+              max={10}
             />
           </div>
 
