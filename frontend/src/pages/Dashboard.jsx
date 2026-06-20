@@ -30,8 +30,8 @@ export default function Dashboard() {
     api.get("/analytics/genres").then((res) => setGenres(res.data.slice(0, 5)))
   }
 
-  function handleLogout() {
-    logout()
+  async function handleLogout() {
+    await logout()
     navigate("/login")
   }
 
