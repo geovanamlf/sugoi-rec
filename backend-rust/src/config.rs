@@ -10,6 +10,7 @@ pub struct Config {
     pub jwt_secret_key: String,
     pub jwt_access_token_expire_minutes: u64,
     pub refresh_token_expire_days: i64,
+    pub refresh_token_cookie_secure: bool,
     pub anilist_url: String,
 }
 
@@ -23,7 +24,7 @@ impl Config {
             .unwrap_or(8080);
 
         let frontend_url =
-            env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+            env::var("FRONTEND_URL").unwrap_or_else(|_| "http://127.0.0.1:5173".to_string());
 
         let database_url =
             env::var("DATABASE_URL").expect("DATABASE_URL must be set in backend-rust/.env");
@@ -52,6 +53,11 @@ impl Config {
 
         validate_refresh_token_expire_days(refresh_token_expire_days);
 
+        let refresh_token_cookie_secure = env::var("REFRESH_TOKEN_COOKIE_SECURE")
+            .ok()
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(false);
+
         let anilist_url =
             env::var("ANILIST_URL").unwrap_or_else(|_| "https://graphql.anilist.co".to_string());
 
@@ -64,6 +70,7 @@ impl Config {
             jwt_secret_key,
             jwt_access_token_expire_minutes,
             refresh_token_expire_days,
+            refresh_token_cookie_secure,
             anilist_url,
         }
     }

@@ -33,6 +33,7 @@ pub fn create_router(state: AppState) -> Router {
         .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
             origin.as_bytes() == frontend_url.as_bytes()
         }))
+        .allow_credentials(true)
         .allow_methods([
             Method::GET,
             Method::POST,

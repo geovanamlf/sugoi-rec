@@ -101,21 +101,15 @@ pub async fn revoke_by_id(
     Ok(())
 }
 
-pub async fn revoke_by_hash_for_user(
-    db: &PgPool,
-    user_id: i32,
-    token_hash: &str,
-) -> Result<u64, sqlx::Error> {
+pub async fn revoke_by_hash(db: &PgPool, token_hash: &str) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         r#"
         UPDATE refresh_tokens
         SET revoked_at = COALESCE(revoked_at, now())
-        WHERE user_id = $1
-          AND token_hash = $2
+        WHERE token_hash = $1
           AND revoked_at IS NULL
         "#,
     )
-    .bind(user_id)
     .bind(token_hash)
     .execute(db)
     .await?;

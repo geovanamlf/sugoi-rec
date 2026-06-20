@@ -8,8 +8,13 @@ import Recommendations from "./pages/Recommendations"
 import AnimeDetail from "./pages/AnimeDetail"
 
 function PrivateRoute({ children }) {
-  const { token } = useAuth()
-  return token ? children : <Navigate to="/login" />
+  const { token, isLoading } = useAuth()
+
+  if (isLoading) {
+    return null
+  }
+
+  return token ? children : <Navigate to="/login" replace />
 }
 
 function AppRoutes() {

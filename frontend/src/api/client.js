@@ -1,18 +1,21 @@
 import axios from "axios"
 
 import {
-  clearAuthTokens,
+  clearAuthSession,
   getAccessToken,
-  getRefreshToken,
-  setAuthTokens,
+  setAccessToken,
 } from "../auth/session"
 
+const API_BASE_URL = "http://127.0.0.1:8080"
+
 const api = axios.create({
-  baseURL: "http://127.0.0.1:8080",
+  baseURL: API_BASE_URL,
+  withCredentials: true,
 })
 
 const publicApi = axios.create({
-  baseURL: "http://127.0.0.1:8080",
+  baseURL: API_BASE_URL,
+  withCredentials: true,
 })
 
 let refreshPromise = null
@@ -29,30 +32,28 @@ function isAuthLogoutRequest(config) {
   return config?.url === "/auth/logout"
 }
 
-async function refreshAuthSession() {
-  const refreshToken = getRefreshToken()
-
-  if (!refreshToken) {
-    throw new Error("Missing refresh token.")
-  }
-
-  const response = await publicApi.post("/auth/refresh", {
-    refresh_token: refreshToken,
-  })
+async function performRefreshAuthSession() {
+  const response = await publicApi.post("/auth/refresh")
 
   const accessToken = response.data.access_token
-  const newRefreshToken = response.data.refresh_token
 
-  if (!accessToken || !newRefreshToken) {
+  if (!accessToken) {
     throw new Error("Invalid refresh response.")
   }
 
-  setAuthTokens({
-    accessToken,
-    refreshToken: newRefreshToken,
-  })
+  setAccessToken(accessToken)
 
   return accessToken
+}
+
+export async function refreshAuthSession() {
+  if (!refreshPromise) {
+    refreshPromise = performRefreshAuthSession().finally(() => {
+      refreshPromise = null
+    })
+  }
+
+  return refreshPromise
 }
 
 api.interceptors.request.use((config) => {
@@ -85,19 +86,14 @@ api.interceptors.response.use(
     originalRequest._retry = true
 
     try {
-      if (!refreshPromise) {
-        refreshPromise = refreshAuthSession().finally(() => {
-          refreshPromise = null
-        })
-      }
+      const newAccessToken = await refreshAuthSession()
 
-      const newAccessToken = await refreshPromise
-
+      originalRequest.headers = originalRequest.headers || {}
       originalRequest.headers.Authorization = `Bearer ${newAccessToken}`
 
       return api(originalRequest)
     } catch (refreshError) {
-      clearAuthTokens()
+      clearAuthSession()
       return Promise.reject(refreshError)
     }
   },

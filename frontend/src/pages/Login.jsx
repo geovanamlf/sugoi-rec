@@ -22,13 +22,12 @@ export default function Login() {
       const res = await api.post("/auth/login", params)
 
       const accessToken = res.data.access_token
-      const refreshToken = res.data.refresh_token
 
-      if (!accessToken || !refreshToken) {
+      if (!accessToken) {
         throw new Error("Invalid login response.")
       }
 
-      login({ accessToken, refreshToken })
+      login(accessToken)
       navigate("/dashboard")
     } catch {
       setError("Email ou senha inválidos.")

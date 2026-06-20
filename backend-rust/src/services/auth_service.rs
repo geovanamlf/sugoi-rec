@@ -10,9 +10,7 @@ use crate::{
     },
     errors::AppError,
     repositories::{refresh_token_repository, user_repository},
-    schemas::auth::{
-        LoginForm, LogoutRequest, RefreshTokenRequest, RegisterRequest, TokenResponse, UserResponse,
-    },
+    schemas::auth::{LoginForm, RegisterRequest, UserResponse},
 };
 
 const WEAK_PASSWORDS: [&str; 12] = [
@@ -31,6 +29,13 @@ const WEAK_PASSWORDS: [&str; 12] = [
 ];
 
 const MAX_REFRESH_TOKEN_LENGTH: usize = 512;
+
+pub struct IssuedTokenPair {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: &'static str,
+    pub expires_in: u64,
+}
 
 pub async fn register(db: &PgPool, payload: RegisterRequest) -> Result<UserResponse, AppError> {
     let email = normalize_email(&payload.email);
@@ -68,7 +73,7 @@ pub async fn login(
     db: &PgPool,
     config: &Config,
     payload: LoginForm,
-) -> Result<TokenResponse, AppError> {
+) -> Result<IssuedTokenPair, AppError> {
     let email = normalize_email(&payload.username);
 
     validate_login_payload(&email, &payload.password)?;
@@ -87,11 +92,11 @@ pub async fn login(
 pub async fn refresh_token(
     db: &PgPool,
     config: &Config,
-    payload: RefreshTokenRequest,
-) -> Result<TokenResponse, AppError> {
-    validate_refresh_token_payload(&payload.refresh_token)?;
+    refresh_token: String,
+) -> Result<IssuedTokenPair, AppError> {
+    validate_refresh_token_payload(&refresh_token)?;
 
-    let token_hash = hash_refresh_token(&payload.refresh_token);
+    let token_hash = hash_refresh_token(&refresh_token);
     let now = Utc::now();
 
     let mut transaction = db.begin().await?;
@@ -154,7 +159,7 @@ pub async fn refresh_token(
 
     let access_token = create_access_token(&stored_token.user_id.to_string(), config)?;
 
-    Ok(TokenResponse {
+    Ok(IssuedTokenPair {
         access_token,
         refresh_token: new_refresh_token,
         token_type: "bearer",
@@ -162,23 +167,13 @@ pub async fn refresh_token(
     })
 }
 
-pub async fn logout(
-    db: &PgPool,
-    config: &Config,
-    authorization: Option<&HeaderValue>,
-    payload: LogoutRequest,
-) -> Result<(), AppError> {
-    let current_user = current_user(db, config, authorization).await?;
+pub async fn logout(db: &PgPool, refresh_token: String) -> Result<(), AppError> {
+    validate_refresh_token_payload(&refresh_token)?;
 
-    validate_refresh_token_payload(&payload.refresh_token)?;
-
-    let token_hash = hash_refresh_token(&payload.refresh_token);
-
-    let revoked_count =
-        refresh_token_repository::revoke_by_hash_for_user(db, current_user.id, &token_hash).await?;
+    let token_hash = hash_refresh_token(&refresh_token);
+    let revoked_count = refresh_token_repository::revoke_by_hash(db, &token_hash).await?;
 
     tracing::info!(
-        user_id = current_user.id,
         revoked_refresh_tokens = revoked_count,
         "User logout requested."
     );
@@ -207,7 +202,7 @@ async fn issue_token_pair(
     db: &PgPool,
     config: &Config,
     user_id: i32,
-) -> Result<TokenResponse, AppError> {
+) -> Result<IssuedTokenPair, AppError> {
     let access_token = create_access_token(&user_id.to_string(), config)?;
 
     let refresh_token = create_refresh_token();
@@ -218,7 +213,7 @@ async fn issue_token_pair(
     refresh_token_repository::create(db, user_id, &refresh_token_hash, refresh_token_expires_at)
         .await?;
 
-    Ok(TokenResponse {
+    Ok(IssuedTokenPair {
         access_token,
         refresh_token,
         token_type: "bearer",
