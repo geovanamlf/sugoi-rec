@@ -3,6 +3,8 @@ import { useAuth } from "../context/AuthContext"
 import { useNavigate } from "react-router-dom"
 import api from "../api/client"
 
+const LIST_PAGE_SIZE = 100
+
 export default function Dashboard() {
   const { logout } = useAuth()
   const navigate = useNavigate()
@@ -12,22 +14,37 @@ export default function Dashboard() {
   const [genres, setGenres] = useState([])
   const [filter, setFilter] = useState("all")
   const [editing, setEditing] = useState(null)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
 
   useEffect(() => {
     loadData()
   }, [])
 
   function loadData() {
-    api.get("/list/?limit=100&offset=0").then((res) => {
-      const data = res.data
-      const items = Array.isArray(data) ? data : data.items ?? []
-
-      setList(items)
-      setListTotal(Array.isArray(data) ? items.length : data.total ?? items.length)
-    })
+    loadListPage(0, true)
 
     api.get("/analytics/ratings").then((res) => setStats(res.data))
     api.get("/analytics/genres").then((res) => setGenres(res.data.slice(0, 5)))
+  }
+
+  async function loadListPage(offset, replace = false) {
+    const res = await api.get(`/list/?limit=${LIST_PAGE_SIZE}&offset=${offset}`)
+    const data = res.data
+    const items = Array.isArray(data) ? data : data.items ?? []
+    const total = Array.isArray(data) ? items.length : data.total ?? items.length
+
+    setList((currentList) => (replace ? items : [...currentList, ...items]))
+    setListTotal(total)
+  }
+
+  async function handleLoadMore() {
+    setIsLoadingMore(true)
+
+    try {
+      await loadListPage(list.length)
+    } finally {
+      setIsLoadingMore(false)
+    }
   }
 
   async function handleLogout() {
@@ -69,6 +86,8 @@ export default function Dashboard() {
   ]
 
   const filteredList = filter === "all" ? list : list.filter((i) => i.status === filter)
+  const hasMoreItems = list.length < listTotal
+  const remainingItems = Math.max(listTotal - list.length, 0)
 
   const counts = {
     watching: list.filter((i) => i.status === "watching").length,
@@ -204,6 +223,19 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
+
+          {hasMoreItems && (
+            <div style={{ display: "flex", justifyContent: "center", marginTop: "1.5rem" }}>
+              <button
+                className="pixel-btn"
+                type="button"
+                onClick={handleLoadMore}
+                disabled={isLoadingMore}
+              >
+                {isLoadingMore ? "CARREGANDO..." : `CARREGAR MAIS (${remainingItems})`}
+              </button>
+            </div>
+          )}
         </div>
 
       </div>

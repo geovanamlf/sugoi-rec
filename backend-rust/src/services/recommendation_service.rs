@@ -1053,3 +1053,203 @@ fn is_ignored_tag(tag: &str) -> bool {
             | "Tragedy"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn profile(already_ids: &[i32], title_roots: &[&str]) -> TasteProfile {
+        TasteProfile {
+            genres: HashMap::new(),
+            tags: HashMap::new(),
+            total_weight: 1.0,
+            already_in_list: already_ids.iter().copied().collect(),
+            title_roots: title_roots.iter().map(|title| title.to_string()).collect(),
+        }
+    }
+
+    fn candidate(
+        id: i32,
+        romaji: &str,
+        english: Option<&str>,
+        relations: Vec<(&str, i32)>,
+    ) -> AniListRecommendationMedia {
+        AniListRecommendationMedia {
+            id,
+            title: AniListRecommendationTitle {
+                romaji: Some(romaji.to_string()),
+                english: english.map(ToString::to_string),
+            },
+            genres: Some(vec!["Action".to_string()]),
+            tags: None,
+            cover_image: None,
+            episodes: None,
+            description: None,
+            average_score: None,
+            popularity: None,
+            relations: if relations.is_empty() {
+                None
+            } else {
+                Some(AniListRecommendationRelations {
+                    edges: Some(
+                        relations
+                            .into_iter()
+                            .map(
+                                |(relation_type, related_id)| AniListRecommendationRelationEdge {
+                                    relation_type: Some(relation_type.to_string()),
+                                    node: Some(AniListRecommendationRelationNode {
+                                        id: related_id,
+                                    }),
+                                },
+                            )
+                            .collect(),
+                    ),
+                })
+            },
+        }
+    }
+
+    #[test]
+    fn title_family_root_removes_common_dependent_work_noise() {
+        assert_eq!(
+            title_family_root("Attack on Titan Season 2"),
+            Some("attack on titan".to_string())
+        );
+
+        assert_eq!(
+            title_family_root("Violet Evergarden Movie"),
+            Some("violet evergarden".to_string())
+        );
+
+        assert_eq!(
+            title_family_root("3-gatsu no Lion 2nd Season"),
+            Some("gatsu no lion".to_string())
+        );
+    }
+
+    #[test]
+    fn build_taste_profile_indexes_romaji_and_english_title_roots() {
+        let rows = vec![UserTasteAnime {
+            status: "completed".to_string(),
+            rating: Some(10),
+            is_favorite: true,
+            anilist_id: 16498,
+            title_romaji: "Shingeki no Kyojin".to_string(),
+            title_english: Some("Attack on Titan".to_string()),
+            genres: Some("Action,Drama".to_string()),
+            tags: None,
+        }];
+
+        let profile = build_taste_profile(&rows);
+
+        assert!(profile.already_in_list.contains(&16498));
+        assert!(profile.title_roots.contains("shingeki no kyojin"));
+        assert!(profile.title_roots.contains("attack on titan"));
+    }
+
+    #[test]
+    fn skips_exact_anime_already_in_user_list() {
+        let profile = profile(&[16498], &["attack on titan"]);
+        let seen_ids = HashSet::new();
+        let candidate = candidate(16498, "Shingeki no Kyojin", Some("Attack on Titan"), vec![]);
+
+        assert!(should_skip_candidate(&candidate, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn skips_candidate_with_same_title_family_as_user_anime() {
+        let profile = profile(&[16498], &["attack on titan"]);
+        let seen_ids = HashSet::new();
+        let candidate = candidate(
+            25777,
+            "Shingeki no Kyojin 2",
+            Some("Attack on Titan Season 2"),
+            vec![],
+        );
+
+        assert!(should_skip_candidate(&candidate, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn skips_candidate_related_to_user_anime_by_relation() {
+        let profile = profile(&[16498], &["attack on titan"]);
+        let seen_ids = HashSet::new();
+        let candidate = candidate(
+            25777,
+            "Shingeki no Kyojin 2",
+            Some("Attack on Titan Season 2"),
+            vec![("PREQUEL", 16498)],
+        );
+
+        assert!(should_skip_candidate(&candidate, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn skips_globally_dependent_work_with_prequel_relation() {
+        let profile = profile(&[], &[]);
+        let seen_ids = HashSet::new();
+        let candidate = candidate(
+            1001,
+            "Made in Abyss: Fukaki Tamashii no Reimei",
+            Some("Made in Abyss: Dawn of the Deep Soul"),
+            vec![("PREQUEL", 999)],
+        );
+
+        assert!(should_skip_candidate(&candidate, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn does_not_skip_main_work_just_because_it_has_a_sequel() {
+        let profile = profile(&[], &[]);
+        let seen_ids = HashSet::new();
+        let candidate = candidate(
+            1002,
+            "Dungeon Meshi",
+            Some("Delicious in Dungeon"),
+            vec![("SEQUEL", 2002)],
+        );
+
+        assert!(!should_skip_candidate(&candidate, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn skips_obvious_dependent_work_title_markers() {
+        let profile = profile(&[], &[]);
+        let seen_ids = HashSet::new();
+
+        let season_two = candidate(
+            2001,
+            "Tian Guan Ci Fu 2",
+            Some("Heaven Official's Blessing Season 2"),
+            vec![],
+        );
+
+        let final_season = candidate(
+            2002,
+            "Fruits Basket: The Final",
+            Some("Fruits Basket The Final Season"),
+            vec![],
+        );
+
+        let fan_letter = candidate(
+            2003,
+            "ONE PIECE FAN LETTER",
+            Some("ONE PIECE FAN LETTER"),
+            vec![],
+        );
+
+        assert!(should_skip_candidate(&season_two, &profile, &seen_ids));
+        assert!(should_skip_candidate(&final_season, &profile, &seen_ids));
+        assert!(should_skip_candidate(&fan_letter, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn does_not_skip_unrelated_standalone_candidate() {
+        let profile = profile(&[16498], &["attack on titan"]);
+        let seen_ids = HashSet::new();
+        let candidate = candidate(1003, "Dungeon Meshi", Some("Delicious in Dungeon"), vec![]);
+
+        assert!(!should_skip_candidate(&candidate, &profile, &seen_ids));
+    }
+}
