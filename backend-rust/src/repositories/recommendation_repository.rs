@@ -7,6 +7,8 @@ pub struct UserTasteAnime {
     pub is_favorite: bool,
 
     pub anilist_id: i32,
+    pub title_romaji: String,
+    pub title_english: Option<String>,
     pub genres: Option<String>,
     pub tags: Option<String>,
 }
@@ -23,6 +25,8 @@ pub async fn list_user_taste_anime(
             ua.is_favorite,
 
             a.anilist_id,
+            a.title_romaji,
+            a.title_english,
             a.genres,
             a.tags
         FROM user_anime ua

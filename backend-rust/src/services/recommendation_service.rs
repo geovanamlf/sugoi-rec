@@ -17,7 +17,7 @@ use crate::{
 const RELEVANCE_THRESHOLD: f64 = 0.20;
 const MAX_ANILIST_QUERIES: usize = 8;
 const MAX_RECOMMENDATIONS: usize = 30;
-const ANILIST_PER_PAGE: i32 = 15;
+const ANILIST_PER_PAGE: i32 = 50;
 const MIN_AVERAGE_SCORE: i32 = 55;
 const ANILIST_RETRY_ATTEMPTS: usize = 2;
 const ANILIST_RETRY_DELAY_MS: u64 = 900;
@@ -50,6 +50,14 @@ query ($genre: String, $page: Int, $perPage: Int, $minScore: Int) {
       description(asHtml: false)
       averageScore
       popularity
+      relations {
+        edges {
+          relationType
+          node {
+            id
+          }
+        }
+      }
     }
   }
 }
@@ -81,6 +89,14 @@ query ($tag: String, $page: Int, $perPage: Int, $minScore: Int) {
       description(asHtml: false)
       averageScore
       popularity
+      relations {
+        edges {
+          relationType
+          node {
+            id
+          }
+        }
+      }
     }
   }
 }
@@ -92,6 +108,7 @@ struct TasteProfile {
     tags: HashMap<String, f64>,
     total_weight: f64,
     already_in_list: HashSet<i32>,
+    title_roots: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +187,8 @@ struct AniListRecommendationMedia {
     average_score: Option<i32>,
 
     popularity: Option<i32>,
+
+    relations: Option<AniListRecommendationRelations>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,6 +206,24 @@ struct AniListRecommendationTag {
 #[derive(Debug, Clone, Deserialize)]
 struct AniListRecommendationCoverImage {
     large: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AniListRecommendationRelations {
+    edges: Option<Vec<AniListRecommendationRelationEdge>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AniListRecommendationRelationEdge {
+    #[serde(rename = "relationType")]
+    relation_type: Option<String>,
+
+    node: Option<AniListRecommendationRelationNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AniListRecommendationRelationNode {
+    id: i32,
 }
 
 pub async fn get_recommendations(
@@ -254,7 +291,7 @@ pub async fn get_recommendations(
             };
 
         for candidate in candidates {
-            if profile.already_in_list.contains(&candidate.id) || seen_ids.contains(&candidate.id) {
+            if should_skip_candidate(&candidate, &profile, &seen_ids) {
                 continue;
             }
 
@@ -353,7 +390,7 @@ fn parse_cached_recommendations(
     Some(
         recommendations
             .into_iter()
-            .filter(|recommendation| !profile.already_in_list.contains(&recommendation.anilist_id))
+            .filter(|recommendation| !should_skip_cached_recommendation(recommendation, profile))
             .collect(),
     )
 }
@@ -382,10 +419,21 @@ fn build_taste_profile(rows: &[UserTasteAnime]) -> TasteProfile {
     let mut genres = HashMap::new();
     let mut tags = HashMap::new();
     let mut already_in_list = HashSet::new();
+    let mut title_roots = HashSet::new();
     let mut total_weight = 0.0;
 
     for row in rows {
         already_in_list.insert(row.anilist_id);
+
+        if let Some(title_root) = title_family_root(&row.title_romaji) {
+            title_roots.insert(title_root);
+        }
+
+        if let Some(title_english) = row.title_english.as_deref() {
+            if let Some(title_root) = title_family_root(title_english) {
+                title_roots.insert(title_root);
+            }
+        }
 
         let weight = anime_weight(row);
         total_weight += weight;
@@ -408,6 +456,7 @@ fn build_taste_profile(rows: &[UserTasteAnime]) -> TasteProfile {
         tags,
         total_weight,
         already_in_list,
+        title_roots,
     }
 }
 
@@ -600,6 +649,298 @@ async fn fetch_candidates_once(
         .and_then(|data| data.page)
         .and_then(|page| page.media)
         .unwrap_or_default())
+}
+
+fn should_skip_candidate(
+    candidate: &AniListRecommendationMedia,
+    profile: &TasteProfile,
+    seen_ids: &HashSet<i32>,
+) -> bool {
+    seen_ids.contains(&candidate.id)
+        || profile.already_in_list.contains(&candidate.id)
+        || is_dependent_work_by_anilist_relation(candidate)
+        || is_related_to_user_list_by_anilist_relation(candidate, profile)
+        || is_related_to_user_list_by_title_family(candidate, profile)
+        || is_obvious_dependent_work_by_title(candidate)
+}
+
+fn should_skip_cached_recommendation(
+    recommendation: &RecommendationResponse,
+    profile: &TasteProfile,
+) -> bool {
+    if profile.already_in_list.contains(&recommendation.anilist_id) {
+        return true;
+    }
+
+    recommendation_title_roots(recommendation)
+        .iter()
+        .any(|candidate_root| {
+            profile
+                .title_roots
+                .iter()
+                .any(|user_root| title_roots_look_related(candidate_root, user_root))
+        })
+}
+
+fn is_dependent_work_by_anilist_relation(candidate: &AniListRecommendationMedia) -> bool {
+    let Some(edges) = candidate
+        .relations
+        .as_ref()
+        .and_then(|relations| relations.edges.as_ref())
+    else {
+        return false;
+    };
+
+    edges.iter().any(|edge| {
+        edge.relation_type
+            .as_deref()
+            .is_some_and(is_global_dependency_relation_type)
+    })
+}
+
+fn is_related_to_user_list_by_anilist_relation(
+    candidate: &AniListRecommendationMedia,
+    profile: &TasteProfile,
+) -> bool {
+    let Some(edges) = candidate
+        .relations
+        .as_ref()
+        .and_then(|relations| relations.edges.as_ref())
+    else {
+        return false;
+    };
+
+    edges.iter().any(|edge| {
+        let Some(relation_type) = edge.relation_type.as_deref() else {
+            return false;
+        };
+
+        let Some(node) = edge.node.as_ref() else {
+            return false;
+        };
+
+        is_blocked_relation_type(relation_type) && profile.already_in_list.contains(&node.id)
+    })
+}
+
+fn is_related_to_user_list_by_title_family(
+    candidate: &AniListRecommendationMedia,
+    profile: &TasteProfile,
+) -> bool {
+    candidate_title_roots(candidate)
+        .iter()
+        .any(|candidate_root| {
+            profile
+                .title_roots
+                .iter()
+                .any(|user_root| title_roots_look_related(candidate_root, user_root))
+        })
+}
+
+fn is_obvious_dependent_work_by_title(candidate: &AniListRecommendationMedia) -> bool {
+    candidate_raw_titles(candidate)
+        .iter()
+        .any(|title| title_has_dependent_work_marker(title))
+}
+
+fn candidate_raw_titles(candidate: &AniListRecommendationMedia) -> Vec<String> {
+    let mut titles = Vec::new();
+
+    if let Some(title) = candidate.title.romaji.as_deref() {
+        titles.push(title.to_string());
+    }
+
+    if let Some(title) = candidate.title.english.as_deref() {
+        titles.push(title.to_string());
+    }
+
+    titles
+}
+
+fn title_has_dependent_work_marker(title: &str) -> bool {
+    let normalized = title
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+
+    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+
+    if tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "season"
+                | "movie"
+                | "movies"
+                | "ova"
+                | "ovas"
+                | "ona"
+                | "onas"
+                | "special"
+                | "specials"
+                | "recap"
+                | "summary"
+                | "summaries"
+                | "final"
+                | "part"
+                | "cour"
+                | "kanketsu"
+                | "kouhan"
+                | "second"
+                | "third"
+                | "fourth"
+                | "fan"
+                | "letter"
+        )
+    }) {
+        return true;
+    }
+
+    tokens.last().is_some_and(|last_token| {
+        last_token
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    })
+}
+
+fn is_global_dependency_relation_type(relation_type: &str) -> bool {
+    matches!(relation_type, "PREQUEL" | "PARENT" | "SUMMARY")
+}
+
+fn is_blocked_relation_type(relation_type: &str) -> bool {
+    matches!(
+        relation_type,
+        "SEQUEL"
+            | "PREQUEL"
+            | "SIDE_STORY"
+            | "PARENT"
+            | "SUMMARY"
+            | "SPIN_OFF"
+            | "ALTERNATIVE"
+            | "COMPILATION"
+    )
+}
+
+fn candidate_title_roots(candidate: &AniListRecommendationMedia) -> Vec<String> {
+    let mut roots = Vec::new();
+
+    if let Some(root) = candidate
+        .title
+        .romaji
+        .as_deref()
+        .and_then(title_family_root)
+    {
+        roots.push(root);
+    }
+
+    if let Some(root) = candidate
+        .title
+        .english
+        .as_deref()
+        .and_then(title_family_root)
+    {
+        roots.push(root);
+    }
+
+    roots
+}
+
+fn recommendation_title_roots(recommendation: &RecommendationResponse) -> Vec<String> {
+    let mut roots = Vec::new();
+
+    if let Some(root) = title_family_root(&recommendation.title_romaji) {
+        roots.push(root);
+    }
+
+    if let Some(root) = recommendation
+        .title_english
+        .as_deref()
+        .and_then(title_family_root)
+    {
+        roots.push(root);
+    }
+
+    roots
+}
+
+fn title_roots_look_related(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+
+    if !title_root_is_specific_enough(left) || !title_root_is_specific_enough(right) {
+        return false;
+    }
+
+    left.starts_with(right) || right.starts_with(left)
+}
+
+fn title_root_is_specific_enough(root: &str) -> bool {
+    root.len() >= 10 && root.split_whitespace().count() >= 2
+}
+
+fn title_family_root(title: &str) -> Option<String> {
+    let normalized = title
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+
+    let tokens = normalized
+        .split_whitespace()
+        .filter(|token| !token.chars().any(|character| character.is_ascii_digit()))
+        .filter(|token| !is_title_family_noise_token(token))
+        .collect::<Vec<_>>();
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    Some(tokens.join(" "))
+}
+
+fn is_title_family_noise_token(token: &str) -> bool {
+    matches!(
+        token,
+        "season"
+            | "seasons"
+            | "movie"
+            | "movies"
+            | "film"
+            | "films"
+            | "ova"
+            | "ovas"
+            | "ona"
+            | "onas"
+            | "special"
+            | "specials"
+            | "recap"
+            | "recaps"
+            | "summary"
+            | "summaries"
+            | "final"
+            | "part"
+            | "cour"
+            | "episode"
+            | "episodes"
+            | "edition"
+            | "remake"
+            | "kanketsu"
+            | "hen"
+            | "kai"
+    )
 }
 
 fn parse_candidate(media: &AniListRecommendationMedia) -> Option<RecommendationResponse> {
