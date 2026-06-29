@@ -17,7 +17,10 @@ use crate::{
 const RELEVANCE_THRESHOLD: f64 = 0.20;
 const MAX_ANILIST_QUERIES: usize = 8;
 const MAX_RECOMMENDATIONS: usize = 30;
+const MAX_CONTINUATIONS: usize = 20;
+const MAX_CONTINUATION_SOURCE_ANIME: usize = 8;
 const ANILIST_PER_PAGE: i32 = 50;
+const ANILIST_MAX_PAGES_PER_SIGNAL: i32 = 2;
 const MIN_AVERAGE_SCORE: i32 = 55;
 const ANILIST_RETRY_ATTEMPTS: usize = 2;
 const ANILIST_RETRY_DELAY_MS: u64 = 900;
@@ -102,6 +105,39 @@ query ($tag: String, $page: Int, $perPage: Int, $minScore: Int) {
 }
 "#;
 
+const CONTINUATIONS_BY_ANIME_QUERY: &str = r#"
+query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    id
+    relations {
+      edges {
+        relationType
+        node {
+          id
+          type
+          title {
+            romaji
+            english
+          }
+          genres
+          tags {
+            name
+            category
+          }
+          coverImage {
+            large
+          }
+          episodes
+          description(asHtml: false)
+          averageScore
+          popularity
+        }
+      }
+    }
+  }
+}
+"#;
+
 #[derive(Debug, Clone)]
 struct TasteProfile {
     genres: HashMap<String, f64>,
@@ -137,6 +173,17 @@ struct AniListRecommendationRequest<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct AniListContinuationRequest {
+    query: &'static str,
+    variables: AniListContinuationVariables,
+}
+
+#[derive(Debug, Serialize)]
+struct AniListContinuationVariables {
+    id: i32,
+}
+
+#[derive(Debug, Serialize)]
 struct AniListRecommendationVariables<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     genre: Option<&'a str>,
@@ -157,6 +204,58 @@ struct AniListRecommendationVariables<'a> {
 #[derive(Debug, Deserialize)]
 struct AniListRecommendationResponse {
     data: Option<AniListRecommendationData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AniListContinuationResponse {
+    data: Option<AniListContinuationData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AniListContinuationData {
+    #[serde(rename = "Media")]
+    media: Option<AniListContinuationMedia>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AniListContinuationMedia {
+    relations: Option<AniListContinuationRelations>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AniListContinuationRelations {
+    edges: Option<Vec<AniListContinuationRelationEdge>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AniListContinuationRelationEdge {
+    #[serde(rename = "relationType")]
+    relation_type: Option<String>,
+
+    node: Option<AniListContinuationNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AniListContinuationNode {
+    id: i32,
+
+    #[serde(rename = "type")]
+    media_type: Option<String>,
+
+    title: AniListRecommendationTitle,
+    genres: Option<Vec<String>>,
+    tags: Option<Vec<AniListRecommendationTag>>,
+
+    #[serde(rename = "coverImage")]
+    cover_image: Option<AniListRecommendationCoverImage>,
+
+    episodes: Option<i32>,
+    description: Option<String>,
+
+    #[serde(rename = "averageScore")]
+    average_score: Option<i32>,
+
+    popularity: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -343,6 +442,258 @@ pub async fn get_recommendations(
     Ok(recommendations)
 }
 
+pub async fn get_continuations(
+    state: &AppState,
+    user_id: i32,
+) -> Result<Vec<RecommendationResponse>, AppError> {
+    let rows = recommendation_repository::list_user_taste_anime(&state.db, user_id).await?;
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let profile = build_taste_profile(&rows);
+    let mut seen_ids = HashSet::new();
+    let mut ranked = Vec::new();
+
+    let mut source_rows = rows
+        .iter()
+        .filter(|row| should_fetch_continuations_for_status(&row.status))
+        .collect::<Vec<_>>();
+
+    source_rows.sort_by(|left, right| {
+        anime_weight(right)
+            .partial_cmp(&anime_weight(left))
+            .unwrap_or(Ordering::Equal)
+    });
+
+    for row in source_rows.into_iter().take(MAX_CONTINUATION_SOURCE_ANIME) {
+        let candidates = match fetch_continuation_candidates(
+            &state.http_client,
+            &state.config.anilist_url,
+            row.anilist_id,
+        )
+        .await
+        {
+            Ok(candidates) => candidates,
+            Err(AppError::TooManyRequests(detail)) => {
+                if !ranked.is_empty() {
+                    tracing::warn!(
+                        anime_id = row.anilist_id,
+                        "AniList rate limit while fetching continuations; returning partial results"
+                    );
+                    break;
+                }
+
+                return Err(AppError::TooManyRequests(detail));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    anime_id = row.anilist_id,
+                    "Skipping continuation lookup after AniList failure. error={:?}",
+                    error
+                );
+                sleep(Duration::from_millis(ANILIST_QUERY_DELAY_MS)).await;
+                continue;
+            }
+        };
+
+        for candidate in candidates {
+            if profile.already_in_list.contains(&candidate.id) || seen_ids.contains(&candidate.id) {
+                continue;
+            }
+
+            let Some(recommendation) = parse_continuation_candidate(&candidate) else {
+                continue;
+            };
+
+            let score = rank_continuation_candidate(&candidate);
+
+            seen_ids.insert(candidate.id);
+            ranked.push(RankedRecommendation {
+                recommendation,
+                score,
+            });
+        }
+
+        sleep(Duration::from_millis(ANILIST_QUERY_DELAY_MS)).await;
+    }
+
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+    });
+
+    Ok(ranked
+        .into_iter()
+        .take(MAX_CONTINUATIONS)
+        .map(|ranked| ranked.recommendation)
+        .collect())
+}
+
+fn should_fetch_continuations_for_status(status: &str) -> bool {
+    matches!(status, "completed" | "watching")
+}
+
+async fn fetch_continuation_candidates(
+    client: &Client,
+    anilist_url: &str,
+    anilist_id: i32,
+) -> Result<Vec<AniListContinuationNode>, AppError> {
+    let mut last_error = None;
+
+    for attempt in 1..=ANILIST_RETRY_ATTEMPTS {
+        match fetch_continuation_candidates_once(client, anilist_url, anilist_id).await {
+            Ok(candidates) => return Ok(candidates),
+            Err(AppError::TooManyRequests(detail)) => {
+                return Err(AppError::TooManyRequests(detail));
+            }
+            Err(error) => {
+                last_error = Some(error);
+
+                if attempt < ANILIST_RETRY_ATTEMPTS {
+                    tracing::warn!(
+                        "Retrying AniList continuation request. attempt={attempt}, anime_id={anilist_id}"
+                    );
+                    sleep(Duration::from_millis(ANILIST_RETRY_DELAY_MS)).await;
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        AppError::ServiceUnavailable("AniList is currently unavailable.".to_string())
+    }))
+}
+
+async fn fetch_continuation_candidates_once(
+    client: &Client,
+    anilist_url: &str,
+    anilist_id: i32,
+) -> Result<Vec<AniListContinuationNode>, AppError> {
+    let response = client
+        .post(anilist_url)
+        .json(&AniListContinuationRequest {
+            query: CONTINUATIONS_BY_ANIME_QUERY,
+            variables: AniListContinuationVariables { id: anilist_id },
+        })
+        .send()
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                "Could not reach AniList continuations endpoint. anime_id={anilist_id}, error={error}"
+            );
+            AppError::ServiceUnavailable("AniList is currently unavailable.".to_string())
+        })?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|error| {
+        tracing::error!(
+            "Could not read AniList continuations response body. anime_id={anilist_id}, error={error}"
+        );
+        AppError::ServiceUnavailable("AniList is currently unavailable.".to_string())
+    })?;
+
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return Err(AppError::TooManyRequests(
+            "AniList rate limit exceeded. Try again later.".to_string(),
+        ));
+    }
+
+    if !status.is_success() {
+        tracing::warn!(
+            "AniList continuations returned status {status}. anime_id={anilist_id}, body={}",
+            response_text
+        );
+
+        return Err(AppError::ServiceUnavailable(
+            "AniList is currently unavailable.".to_string(),
+        ));
+    }
+
+    let body = serde_json::from_str::<AniListContinuationResponse>(&response_text).map_err(
+        |error| {
+            tracing::error!(
+                "Invalid AniList continuations response body. anime_id={anilist_id}, error={error}, body={}",
+                response_text
+            );
+            AppError::ServiceUnavailable("AniList is currently unavailable.".to_string())
+        },
+    )?;
+
+    let candidates = body
+        .data
+        .and_then(|data| data.media)
+        .and_then(|media| media.relations)
+        .and_then(|relations| relations.edges)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|edge| edge.relation_type.as_deref() == Some("SEQUEL"))
+        .filter_map(|edge| edge.node)
+        .filter(|node| node.media_type.as_deref() == Some("ANIME"))
+        .collect::<Vec<_>>();
+
+    Ok(candidates)
+}
+
+fn parse_continuation_candidate(media: &AniListContinuationNode) -> Option<RecommendationResponse> {
+    let title_romaji = media
+        .title
+        .romaji
+        .clone()
+        .or_else(|| media.title.english.clone())?;
+
+    let genres = media.genres.clone().unwrap_or_default();
+
+    if genres.is_empty()
+        || media
+            .cover_image
+            .as_ref()
+            .and_then(|cover| cover.large.as_ref())
+            .is_none()
+    {
+        return None;
+    }
+
+    let tags = media
+        .tags
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tag| {
+            if tag.category.as_deref() == Some("Demographic") {
+                return None;
+            }
+
+            tag.name
+        })
+        .filter(|tag| !is_ignored_tag(tag))
+        .collect::<Vec<_>>();
+
+    Some(RecommendationResponse {
+        anilist_id: media.id,
+        title_romaji,
+        title_english: media.title.english.clone(),
+        genres,
+        tags,
+        cover_image_url: media
+            .cover_image
+            .as_ref()
+            .and_then(|cover| cover.large.clone()),
+        episodes: media.episodes,
+        description: media.description.clone(),
+    })
+}
+
+fn rank_continuation_candidate(media: &AniListContinuationNode) -> f64 {
+    let average_score_bonus = media.average_score.unwrap_or(0) as f64 / 100.0;
+    let popularity_bonus = media.popularity.unwrap_or(0).min(500_000) as f64 / 500_000.0;
+
+    average_score_bonus + popularity_bonus * 0.25
+}
+
 async fn read_valid_cached_recommendations(
     state: &AppState,
     user_id: i32,
@@ -387,12 +738,18 @@ fn parse_cached_recommendations(
         }
     };
 
-    Some(
-        recommendations
-            .into_iter()
-            .filter(|recommendation| !should_skip_cached_recommendation(recommendation, profile))
-            .collect(),
-    )
+    let had_cached_recommendations = !recommendations.is_empty();
+
+    let filtered_recommendations = recommendations
+        .into_iter()
+        .filter(|recommendation| !should_skip_cached_recommendation(recommendation, profile))
+        .collect::<Vec<_>>();
+
+    if had_cached_recommendations && filtered_recommendations.is_empty() {
+        return None;
+    }
+
+    Some(filtered_recommendations)
 }
 
 async fn write_recommendation_cache(
@@ -539,26 +896,60 @@ async fn fetch_candidates(
     anilist_url: &str,
     signal: &SearchSignal,
 ) -> Result<Vec<AniListRecommendationMedia>, AppError> {
+    let mut all_candidates = Vec::new();
     let mut last_error = None;
 
-    for attempt in 1..=ANILIST_RETRY_ATTEMPTS {
-        match fetch_candidates_once(client, anilist_url, signal).await {
-            Ok(candidates) => return Ok(candidates),
-            Err(AppError::TooManyRequests(detail)) => {
-                return Err(AppError::TooManyRequests(detail));
-            }
-            Err(error) => {
-                last_error = Some(error);
+    for page in 1..=ANILIST_MAX_PAGES_PER_SIGNAL {
+        let mut page_loaded = false;
 
-                if attempt < ANILIST_RETRY_ATTEMPTS {
-                    tracing::warn!(
-                        "Retrying AniList recommendation request. attempt={attempt}, signal={:?}",
-                        signal
-                    );
-                    sleep(Duration::from_millis(ANILIST_RETRY_DELAY_MS)).await;
+        for attempt in 1..=ANILIST_RETRY_ATTEMPTS {
+            match fetch_candidates_once(client, anilist_url, signal, page).await {
+                Ok(candidates) => {
+                    page_loaded = true;
+
+                    if candidates.is_empty() {
+                        return Ok(all_candidates);
+                    }
+
+                    all_candidates.extend(candidates);
+                    break;
+                }
+                Err(AppError::TooManyRequests(detail)) => {
+                    if !all_candidates.is_empty() {
+                        tracing::warn!(
+                            "AniList rate limit while fetching extra recommendation pages; returning partial candidates. signal={:?}, page={page}",
+                            signal
+                        );
+                        return Ok(all_candidates);
+                    }
+
+                    return Err(AppError::TooManyRequests(detail));
+                }
+                Err(error) => {
+                    last_error = Some(error);
+
+                    if attempt < ANILIST_RETRY_ATTEMPTS {
+                        tracing::warn!(
+                            "Retrying AniList recommendation request. attempt={attempt}, signal={:?}, page={page}",
+                            signal
+                        );
+                        sleep(Duration::from_millis(ANILIST_RETRY_DELAY_MS)).await;
+                    }
                 }
             }
         }
+
+        if !page_loaded {
+            break;
+        }
+
+        if page < ANILIST_MAX_PAGES_PER_SIGNAL {
+            sleep(Duration::from_millis(ANILIST_QUERY_DELAY_MS)).await;
+        }
+    }
+
+    if !all_candidates.is_empty() {
+        return Ok(all_candidates);
     }
 
     Err(last_error.unwrap_or_else(|| {
@@ -570,6 +961,7 @@ async fn fetch_candidates_once(
     client: &Client,
     anilist_url: &str,
     signal: &SearchSignal,
+    page: i32,
 ) -> Result<Vec<AniListRecommendationMedia>, AppError> {
     let (query, genre, tag) = match signal.kind {
         SearchSignalKind::Genre => (
@@ -591,7 +983,7 @@ async fn fetch_candidates_once(
             variables: AniListRecommendationVariables {
                 genre,
                 tag,
-                page: 1,
+                page,
                 per_page: ANILIST_PER_PAGE,
                 min_score: MIN_AVERAGE_SCORE,
             },
@@ -1242,6 +1634,55 @@ mod tests {
         assert!(should_skip_candidate(&season_two, &profile, &seen_ids));
         assert!(should_skip_candidate(&final_season, &profile, &seen_ids));
         assert!(should_skip_candidate(&fan_letter, &profile, &seen_ids));
+    }
+
+    #[test]
+    fn continuation_lookup_only_uses_active_or_completed_statuses() {
+        assert!(should_fetch_continuations_for_status("completed"));
+        assert!(should_fetch_continuations_for_status("watching"));
+        assert!(!should_fetch_continuations_for_status("planned"));
+        assert!(!should_fetch_continuations_for_status("dropped"));
+    }
+
+    #[test]
+    fn continuation_source_limit_stays_small_to_avoid_anilist_rate_limit() {
+        assert_eq!(MAX_CONTINUATION_SOURCE_ANIME, 8);
+    }
+
+    #[test]
+    fn recommendation_lookup_fetches_extra_pages_when_first_page_is_exhausted() {
+        assert_eq!(ANILIST_MAX_PAGES_PER_SIGNAL, 2);
+    }
+
+    #[test]
+    fn cached_recommendations_become_invalid_when_everything_is_already_in_user_list() {
+        let profile = profile(&[1, 2], &[]);
+
+        let cached = serde_json::to_string(&vec![
+            RecommendationResponse {
+                anilist_id: 1,
+                title_romaji: "Anime One".to_string(),
+                title_english: None,
+                genres: vec!["Action".to_string()],
+                tags: Vec::new(),
+                cover_image_url: Some("https://example.com/1.jpg".to_string()),
+                episodes: Some(12),
+                description: None,
+            },
+            RecommendationResponse {
+                anilist_id: 2,
+                title_romaji: "Anime Two".to_string(),
+                title_english: None,
+                genres: vec!["Drama".to_string()],
+                tags: Vec::new(),
+                cover_image_url: Some("https://example.com/2.jpg".to_string()),
+                episodes: Some(12),
+                description: None,
+            },
+        ])
+        .expect("cache should serialize");
+
+        assert!(parse_cached_recommendations(&cached, &profile).is_none());
     }
 
     #[test]

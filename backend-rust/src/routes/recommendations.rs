@@ -14,7 +14,9 @@ use crate::{
 };
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/recommendations/", get(get_recommendations))
+    Router::new()
+        .route("/recommendations/", get(get_recommendations))
+        .route("/recommendations/continuations", get(get_continuations))
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,17 @@ async fn get_recommendations(
         recommendation_service::get_recommendations(&state, user.id, query.refresh).await?;
 
     Ok(Json(recommendations))
+}
+
+async fn get_continuations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<RecommendationResponse>>, AppError> {
+    let user = require_authenticated_user(&state, &headers).await?;
+
+    let continuations = recommendation_service::get_continuations(&state, user.id).await?;
+
+    Ok(Json(continuations))
 }
 
 async fn require_authenticated_user(

@@ -4,11 +4,14 @@ import api from "../api/client"
 
 export default function Recommendations() {
   const [recs, setRecs] = useState([])
+  const [continuations, setContinuations] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingContinuations, setLoadingContinuations] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [adding, setAdding] = useState(null)
   const [activeGenre, setActiveGenre] = useState("TODOS")
   const [error, setError] = useState(null)
+  const [continuationsError, setContinuationsError] = useState(null)
 
   const requestIdRef = useRef(0)
   const navigate = useNavigate()
@@ -68,12 +71,58 @@ export default function Recommendations() {
       })
   }
 
+  function loadContinuations(signal) {
+    setContinuationsError(null)
+    setLoadingContinuations(true)
+
+    api.get("/recommendations/continuations", { signal })
+      .then((res) => {
+        setContinuations(Array.isArray(res.data) ? res.data : [])
+      })
+      .catch((err) => {
+        if (err?.code === "ERR_CANCELED" || err?.name === "CanceledError") {
+          return
+        }
+
+        const status = err?.response?.status
+        const detail = err?.response?.data?.detail
+
+        console.error("Erro ao carregar continuações:", status, err?.response?.data || err)
+
+        if (status === 429) {
+          setContinuationsError("A AniList limitou as buscas de continuações agora. Tente novamente em alguns minutos.")
+          return
+        }
+
+        if (status === 401) {
+          setContinuationsError("Sua sessão expirou. Faça login novamente.")
+          return
+        }
+
+        if (status === 503) {
+          setContinuationsError("A AniList está instável agora. Tente novamente em alguns minutos.")
+          return
+        }
+
+        setContinuationsError(detail || "Não foi possível carregar continuações agora.")
+      })
+      .finally(() => {
+        setLoadingContinuations(false)
+      })
+  }
+
+
   useEffect(() => {
     const controller = new AbortController()
 
     loadRecs(false, controller.signal)
 
+    const continuationsTimer = window.setTimeout(() => {
+      loadContinuations(controller.signal)
+    }, 1500)
+
     return () => {
+      window.clearTimeout(continuationsTimer)
       controller.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -90,7 +139,19 @@ export default function Recommendations() {
     : recs.filter((anime) => anime.genres?.includes(activeGenre))
 
   function handleRecommendationAdded(anilistId) {
-    setRecs((current) => current.filter((anime) => anime.anilist_id !== anilistId))
+    setRecs((current) => {
+      const nextRecommendations = current.filter((anime) => anime.anilist_id !== anilistId)
+
+      if (current.length > 0 && nextRecommendations.length === 0) {
+        window.setTimeout(() => {
+          loadRecs(true)
+        }, 0)
+      }
+
+      return nextRecommendations
+    })
+
+    setContinuations((current) => current.filter((anime) => anime.anilist_id !== anilistId))
   }
 
   return (
@@ -105,7 +166,13 @@ export default function Recommendations() {
           <button
             className="pixel-btn"
             style={{ fontSize: "13px", opacity: refreshing ? 0.6 : 1 }}
-            onClick={() => loadRecs(true)}
+            onClick={() => {
+              loadRecs(true)
+
+              window.setTimeout(() => {
+                loadContinuations()
+              }, 1500)
+            }}
             disabled={refreshing || loading}
           >
             {refreshing ? "⌛ atualizando..." : "↺ atualizar"}
@@ -128,6 +195,61 @@ export default function Recommendations() {
                 mantendo as recomendações que já estavam carregadas.
               </p>
             )}
+          </div>
+        )}
+
+        {!loadingContinuations && continuationsError && (
+          <div className="pixel-box" style={{ maxWidth: "560px", marginBottom: "1.5rem" }}>
+            <h2 className="pixel-subtitle">▶ continuar séries</h2>
+            <p style={{ fontSize: "14px", color: "#e07070", lineHeight: "1.7" }}>
+              {continuationsError}
+            </p>
+          </div>
+        )}
+
+        {!loadingContinuations && continuations.length > 0 && (
+          <div className="pixel-box" style={{ marginBottom: "1.5rem" }}>
+            <div style={{ marginBottom: "1rem" }}>
+              <h2 className="pixel-subtitle">▶ continuar séries</h2>
+              <p style={{ fontSize: "13px", color: "#a8a8c0", lineHeight: "1.7" }}>
+                próximas temporadas e continuações diretas de animes que você já está assistindo ou concluiu.
+              </p>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem" }}>
+              {continuations.map((anime) => (
+                <div
+                  key={anime.anilist_id}
+                  className="pixel-box"
+                  style={{ padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", cursor: "pointer" }}
+                  onClick={() => navigate(`/anime/${anime.anilist_id}`)}
+                >
+                  {anime.cover_image_url && (
+                    <img
+                      src={anime.cover_image_url}
+                      alt={anime.title_romaji}
+                      style={{ width: "100%", height: "180px", objectFit: "cover", border: "3px solid #e8d5b7" }}
+                    />
+                  )}
+                  <h2 className="font-pixel" style={{ fontSize: "14px", color: "#a8c5a0", lineHeight: "1.4" }}>
+                    {anime.title_english || anime.title_romaji}
+                  </h2>
+                  <p style={{ fontSize: "12px", color: "#c9a87c" }}>
+                    {anime.episodes ? `${anime.episodes} eps` : "eps: —"}
+                  </p>
+                  <p style={{ fontSize: "12px", color: "#a8a8c0" }}>
+                    {anime.genres?.join(" · ")}
+                  </p>
+                  <button
+                    className="pixel-btn"
+                    style={{ fontSize: "13px", padding: "6px", marginTop: "auto" }}
+                    onClick={(e) => { e.stopPropagation(); setAdding(anime) }}
+                  >
+                    + ADICIONAR
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
